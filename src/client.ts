@@ -183,6 +183,7 @@ export function startEditor(options: EditorOptions): void {
     undoHistory = [snapshot(active)];
     toolbar.hidden = false;
     updateUndoButton();
+    updateStructureButtons();
     setStatus('Editing');
     positionToolbar();
     active.focus({ preventScroll: true });
@@ -383,12 +384,122 @@ export function startEditor(options: EditorOptions): void {
     else if (tag) changeBlockTag(tag);
     else if (list === 'ul' || list === 'ol') changeList(list);
     else if (button.dataset.action === 'undo') undoEdit();
+    else if (button.dataset.action === 'add-block') void addBlockAfter();
+    else if (button.dataset.action === 'delete-block') void deleteBlock();
     else if (button.dataset.action === 'link') openLinkEditor();
     else if (button.dataset.action === 'apply-link') applyLink();
     else if (button.dataset.action === 'remove-link') removeLink();
     else if (button.dataset.action === 'cancel-link') closeLinkEditor();
     else if (button.dataset.action === 'save') queueSave(active);
     else if (button.dataset.action === 'done') void finishEditing();
+  }
+
+  async function structuralTarget(): Promise<{ element: HTMLElement; marker: string } | undefined> {
+    if (!active) return undefined;
+    let element = active;
+    if (hasUnsavedChanges(element)) {
+      const saved = await queueSave(element);
+      if (!saved) return undefined;
+      element = active ?? element;
+    }
+    const marker = element.getAttribute(MARKER_ATTRIBUTE);
+    const decoded = decodeClientMarker(marker);
+    if (!marker || !decoded || decoded.format === 'frontmatter') {
+      setStatus('Frontmatter fields cannot be added or deleted.', true);
+      return undefined;
+    }
+    return { element, marker };
+  }
+
+  async function addBlockAfter(): Promise<void> {
+    const target = await structuralTarget();
+    if (!target) return;
+    setStatus('Adding block...');
+    try {
+      const response = await fetch(options.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marker: target.marker, operation: 'insert-after' }),
+      });
+      const body = await response.json() as SaveResponse;
+      if (!response.ok || !body.marker) throw new Error(body.error ?? 'The block could not be added.');
+
+      const paragraph = document.createElement('p');
+      paragraph.textContent = 'New paragraph';
+      paragraph.setAttribute(MARKER_ATTRIBUTE, body.marker);
+      if (target.element.isConnected) {
+        target.element.after(paragraph);
+        await activate(paragraph);
+      } else {
+        rememberInsertedBlock(body.marker);
+        active = null;
+        await restoreActiveSession();
+      }
+      setStatus('Block added');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'The block could not be added.', true);
+    }
+  }
+
+  async function deleteBlock(): Promise<void> {
+    if (!active || !window.confirm('Delete this block from its source file?')) return;
+    const target = await structuralTarget();
+    if (!target) return;
+    setStatus('Deleting block...');
+    try {
+      try {
+        sessionStorage.removeItem(SESSION_KEY);
+      } catch {
+        // Deletion still works when session storage is unavailable.
+      }
+      const response = await fetch(options.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marker: target.marker, operation: 'delete' }),
+      });
+      const body = await response.json() as SaveResponse;
+      if (!response.ok) throw new Error(body.error ?? 'The block could not be deleted.');
+      if (target.element.isConnected) target.element.remove();
+      active = null;
+      undoHistory = [];
+      toolbar.hidden = true;
+      setStatus('Block deleted');
+    } catch (error) {
+      if (target.element.isConnected) {
+        active = target.element;
+        rememberActiveSession();
+      }
+      setStatus(error instanceof Error ? error.message : 'The block could not be deleted.', true);
+    }
+  }
+
+  function rememberInsertedBlock(token: string): void {
+    const marker = decodeClientMarker(token);
+    if (!marker) return;
+    const inserted = { html: 'New paragraph', tag: 'p' };
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+        pathname: location.pathname,
+        file: marker.file,
+        start: marker.start,
+        html: inserted.html,
+        tag: inserted.tag,
+        history: [inserted],
+        suppressAutosave: true,
+      } satisfies ActiveSession));
+    } catch {
+      // The inserted block still exists in source when session storage is unavailable.
+    }
+  }
+
+  function updateStructureButtons(): void {
+    const marker = decodeClientMarker(active?.getAttribute(MARKER_ATTRIBUTE) ?? null);
+    const disabled = !marker || marker.format === 'frontmatter';
+    for (const button of toolbar.querySelectorAll<HTMLButtonElement>(
+      '[data-action="add-block"], [data-action="delete-block"]',
+    )) {
+      button.disabled = disabled;
+    }
   }
 
   function findFrontmatterContextMarker(): string | undefined {
@@ -851,14 +962,19 @@ function readActiveSession(): ActiveSession | undefined {
   }
 }
 
-function decodeClientMarker(token: string | null): { file: string; start: number } | undefined {
+function decodeClientMarker(token: string | null): {
+  file: string;
+  start: number;
+  format: 'astro' | 'frontmatter' | 'markdown';
+} | undefined {
   if (!token) return undefined;
   try {
     const base64 = token.replace(/-/g, '+').replace(/_/g, '/');
     const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
     const value = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
     if (typeof value.file !== 'string' || typeof value.start !== 'number') return undefined;
-    return { file: value.file, start: value.start };
+    if (value.format !== 'astro' && value.format !== 'frontmatter' && value.format !== 'markdown') return undefined;
+    return { file: value.file, start: value.start, format: value.format };
   } catch {
     return undefined;
   }
@@ -906,6 +1022,8 @@ function toolbarMarkup(): string {
       }
       button { min-width: 36px; min-height: 36px; padding: 6px 9px; color: inherit; background: #1f2937; border: 1px solid #64748b; border-radius: 5px; font: inherit; cursor: pointer; }
       button:hover { background: #334155; }
+      button.danger { color: #fecaca; border-color: #b91c1c; }
+      button.danger:hover { background: #7f1d1d; }
       button:disabled { opacity: .45; cursor: not-allowed; }
       button:focus-visible, input:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 1px; }
       .bold { font-weight: 700; } .italic { font-style: italic; }
@@ -936,6 +1054,9 @@ function toolbarMarkup(): string {
       <button type="button" data-action="link" aria-label="Link" title="Link (Ctrl+K)">Link</button>
       <button type="button" data-list="ul" aria-label="Bullet list" title="Bullet list (Ctrl+Shift+8)">• List</button>
       <button type="button" data-list="ol" aria-label="Numbered list" title="Numbered list (Ctrl+Shift+7)">1. List</button>
+      <span class="separator" aria-hidden="true"></span>
+      <button type="button" data-action="add-block" aria-label="Add block below">+ Block</button>
+      <button type="button" class="danger" data-action="delete-block" aria-label="Delete block">Delete</button>
       <span class="link-editor" role="group" aria-label="Edit link" hidden>
         <label><input type="text" inputmode="url" aria-label="Link URL" placeholder="https://example.com or /page" /></label>
         <button type="button" data-action="apply-link" aria-label="Apply link">Apply</button>

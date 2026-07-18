@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { applySourceEdit } from '../src/persist.ts';
+import { applySourceEdit, applySourceStructureEdit } from '../src/persist.ts';
 import { createMarker, decodeMarker, encodeMarker } from '../src/marker.ts';
 
 async function fixture(source: string, extension = '.md') {
@@ -53,6 +53,70 @@ test('keeps marker coordinates stable when rendered positions exclude frontmatte
 
   assert.equal(await readFile(file, 'utf8'), '---\ntitle: Example\n---\nChanged body\n');
   assert.equal(decodeMarker(result.marker).start, 0);
+});
+
+test('adds a Markdown paragraph after the selected block', async (t) => {
+  const source = 'First block\n\nSecond block\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = encodeMarker(createMarker('page.md', 0, 11, 'First block', 'markdown', 'p'));
+
+  const result = await applySourceStructureEdit(root, { marker: token, operation: 'insert-after' });
+
+  assert.equal(await readFile(file, 'utf8'), 'First block\n\nNew paragraph\n\nSecond block\n');
+  assert.equal(decodeMarker(result.marker!).original, 'New paragraph');
+  assert.equal(decodeMarker(result.marker!).start, 13);
+});
+
+test('adds an Astro paragraph with the selected block indentation', async (t) => {
+  const source = '<div>\n  <p>First</p>\n  <p>Second</p>\n</div>\n';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const start = source.indexOf('<p>First</p>');
+  const token = encodeMarker(createMarker('page.astro', start, start + 12, '<p>First</p>', 'astro', 'p'));
+
+  await applySourceStructureEdit(root, { marker: token, operation: 'insert-after' });
+
+  assert.equal(
+    await readFile(file, 'utf8'),
+    '<div>\n  <p>First</p>\n  <p>New paragraph</p>\n  <p>Second</p>\n</div>\n',
+  );
+});
+
+test('deletes only the selected Markdown block and its separator', async (t) => {
+  const source = 'First block\n\nSecond block\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = encodeMarker(createMarker('page.md', 0, 11, 'First block', 'markdown', 'p'));
+
+  const result = await applySourceStructureEdit(root, { marker: token, operation: 'delete' });
+
+  assert.equal(await readFile(file, 'utf8'), 'Second block\n');
+  assert.equal(result.marker, undefined);
+});
+
+test('deletes an Astro block without leaving an empty indented line', async (t) => {
+  const source = '<div>\n  <p>First</p>\n  <p>Second</p>\n</div>\n';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const start = source.indexOf('<p>First</p>');
+  const token = encodeMarker(createMarker('page.astro', start, start + 12, '<p>First</p>', 'astro', 'p'));
+
+  await applySourceStructureEdit(root, { marker: token, operation: 'delete' });
+
+  assert.equal(await readFile(file, 'utf8'), '<div>\n  <p>Second</p>\n</div>\n');
+});
+
+test('rejects structural edits to frontmatter fields', async (t) => {
+  const source = '---\ntitle: Example\n---\nBody\n';
+  const { root } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = encodeMarker(createMarker('page.md', 7, 21, 'title: Example', 'frontmatter', 'h1'));
+
+  await assert.rejects(
+    applySourceStructureEdit(root, { marker: token, operation: 'delete' }),
+    /Frontmatter fields cannot be added or deleted/,
+  );
 });
 
 test('updates a quoted frontmatter title as plain text', async (t) => {

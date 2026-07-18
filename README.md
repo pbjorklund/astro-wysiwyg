@@ -40,11 +40,13 @@ Start Astro with `npm run dev`, then click an editable text block.
 | Numbered list | `Ctrl+Shift+7`, `Cmd+Shift+7`, or **Numbered list** |
 | Bullet list | `Ctrl+Shift+8`, `Cmd+Shift+8`, or **Bullet list** |
 | Heading 1-6 | `Alt+1` through `Alt+6` |
+| Add a paragraph after the active block | **Add block below** |
+| Remove the active block | **Delete block**, then confirm |
 | Move focus to the toolbar | `Alt+F10` |
 | Save now | `Ctrl+S`, `Cmd+S`, or **Save** |
 | Finish editing | `Escape` or **Done** |
 
-The floating toolbar has Undo, Bold, Italic, Link, Bullet list, Numbered list, H1-H6, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. Changes save after 500 ms by default. If Astro reloads a content-collection page after the write, the same block and caret return to edit mode automatically.
+The floating toolbar has Undo, Bold, Italic, Link, Bullet list, Numbered list, Add block below, Delete block, H1-H6, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. Changes save after 500 ms by default. If Astro reloads a content-collection page after the write, the same block and caret return to edit mode automatically.
 
 ## Dev toolbar controls
 
@@ -76,6 +78,7 @@ The integration edits source blocks it can map without guessing:
 - Static paragraphs, headings, list items, and common text-bearing elements in `.astro` files.
 - Paragraphs, headings, and list items in Markdown and MDX.
 - Inline bold, italic, links, code, and other standard formatting inside those blocks.
+- Explicit paragraph insertion after an active Astro or Markdown block, and deletion of the active block.
 
 Astro attributes and classes stay on the original element. Markdown formatting is converted back from the browser DOM to Markdown syntax. Rendered `data.title`, `data.description`, and `frontmatter.title` text maps back to Markdown frontmatter. Article cards use their `/collection/slug` link to find the matching `src/content/collection/slug` source file.
 

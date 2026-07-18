@@ -22,6 +22,23 @@ export interface SourceEditResult {
   file: string;
 }
 
+export interface SourceStructureEdit {
+  marker: string;
+  operation: 'delete' | 'insert-after';
+}
+
+export interface SourceStructureEditResult {
+  marker?: string;
+  file: string;
+}
+
+interface LocatedSource {
+  marker: ReturnType<typeof decodeMarker>;
+  filePath: string;
+  source: string;
+  start: number;
+}
+
 export class SourceEditError extends Error {
   readonly status: number;
 
@@ -36,24 +53,7 @@ export async function applySourceEdit(
   edit: SourceEdit,
   onBeforeWrite?: (file: string) => void | Promise<void>,
 ): Promise<SourceEditResult> {
-  const marker = decodeMarker(edit.marker);
-  const rootPath = await realpath(root);
-  const candidate = path.resolve(rootPath, marker.file);
-  assertInsideRoot(rootPath, candidate);
-  if (!EDITABLE_EXTENSIONS.has(path.extname(candidate).toLowerCase())) {
-    throw new SourceEditError('This source file type cannot be edited.', 400);
-  }
-
-  let filePath: string;
-  try {
-    filePath = await realpath(candidate);
-  } catch {
-    throw new SourceEditError('The source file no longer exists. Reload the page and try again.', 404);
-  }
-  assertInsideRoot(rootPath, filePath);
-
-  const source = await readFile(filePath, 'utf8');
-  const start = locateOriginal(source, marker.original, marker.start, marker.end);
+  const { marker, filePath, source, start } = await locateSource(root, edit.marker);
   const tag = normalizeTag(edit.tag ?? marker.tag);
   const replacement = marker.format === 'astro'
     ? serializeAstroElement(marker.original, edit.html, marker.tag, tag)
@@ -75,6 +75,92 @@ export async function applySourceEdit(
     )),
     file: filePath,
   };
+}
+
+export async function applySourceStructureEdit(
+  root: string,
+  edit: SourceStructureEdit,
+): Promise<SourceStructureEditResult> {
+  const { marker, filePath, source, start } = await locateSource(root, edit.marker);
+  if (marker.format === 'frontmatter') {
+    throw new SourceEditError('Frontmatter fields cannot be added or deleted as content blocks.', 400);
+  }
+
+  if (edit.operation === 'insert-after') {
+    const newline = source.includes('\r\n') ? '\r\n' : '\n';
+    const indentation = marker.format === 'astro' ? lineIndentation(source, start) : '';
+    const separator = marker.format === 'astro' ? `${newline}${indentation}` : `${newline}${newline}`;
+    const inserted = marker.format === 'astro' ? '<p>New paragraph</p>' : 'New paragraph';
+    const insertion = start + marker.original.length;
+    const updated = source.slice(0, insertion) + separator + inserted + source.slice(insertion);
+    await writeFile(filePath, updated, 'utf8');
+    const markerStart = marker.start + marker.original.length + separator.length;
+    return {
+      file: filePath,
+      marker: encodeMarker(createMarker(
+        marker.file,
+        markerStart,
+        markerStart + inserted.length,
+        inserted,
+        marker.format,
+        'p',
+      )),
+    };
+  }
+
+  const [deletionStart, deletionEnd] = marker.format === 'astro'
+    ? astroDeletionRange(source, start, marker.original.length)
+    : markdownDeletionRange(source, start, marker.original.length);
+  await writeFile(filePath, source.slice(0, deletionStart) + source.slice(deletionEnd), 'utf8');
+  return { file: filePath };
+}
+
+async function locateSource(root: string, token: string): Promise<LocatedSource> {
+  const marker = decodeMarker(token);
+  const rootPath = await realpath(root);
+  const candidate = path.resolve(rootPath, marker.file);
+  assertInsideRoot(rootPath, candidate);
+  if (!EDITABLE_EXTENSIONS.has(path.extname(candidate).toLowerCase())) {
+    throw new SourceEditError('This source file type cannot be edited.', 400);
+  }
+
+  let filePath: string;
+  try {
+    filePath = await realpath(candidate);
+  } catch {
+    throw new SourceEditError('The source file no longer exists. Reload the page and try again.', 404);
+  }
+  assertInsideRoot(rootPath, filePath);
+
+  const source = await readFile(filePath, 'utf8');
+  const start = locateOriginal(source, marker.original, marker.start, marker.end);
+  return { marker, filePath, source, start };
+}
+
+function lineIndentation(source: string, start: number): string {
+  const lineStart = source.lastIndexOf('\n', start - 1) + 1;
+  const prefix = source.slice(lineStart, start);
+  return prefix.trim() ? '' : prefix;
+}
+
+function markdownDeletionRange(source: string, start: number, length: number): [number, number] {
+  const end = start + length;
+  const followingSeparator = /^(?:\r?\n){2}/.exec(source.slice(end))?.[0];
+  if (followingSeparator) return [start, end + followingSeparator.length];
+  const precedingSeparator = /(?:\r?\n){2}$/.exec(source.slice(0, start))?.[0];
+  if (precedingSeparator) return [start - precedingSeparator.length, end];
+  return [start, end];
+}
+
+function astroDeletionRange(source: string, start: number, length: number): [number, number] {
+  const end = start + length;
+  const lineStart = source.lastIndexOf('\n', start - 1) + 1;
+  const nextNewline = source.indexOf('\n', end);
+  const lineEnd = nextNewline < 0 ? source.length : nextNewline;
+  if (!source.slice(lineStart, start).trim() && !source.slice(end, lineEnd).trim()) {
+    return [lineStart, nextNewline < 0 ? lineEnd : lineEnd + 1];
+  }
+  return [start, end];
 }
 
 function assertInsideRoot(root: string, candidate: string): void {

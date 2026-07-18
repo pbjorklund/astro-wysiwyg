@@ -3,7 +3,13 @@ import type { AstroConfig, AstroIntegration } from 'astro';
 import type { ViteDevServer } from 'vite';
 import { resolveAstroSourceMarker } from './astro-transform.ts';
 import { readFrontmatterFields, updateFrontmatterFields } from './frontmatter.ts';
-import { applySourceEdit, SourceEditError, type SourceEdit } from './persist.ts';
+import {
+  applySourceEdit,
+  applySourceStructureEdit,
+  SourceEditError,
+  type SourceEdit,
+  type SourceStructureEdit,
+} from './persist.ts';
 import { rehypeEditableBlocks } from './rehype.ts';
 
 export interface WysiwygOptions {
@@ -84,6 +90,10 @@ function registerSaveEndpoint(
         });
         return sendJson(response, 200, { marker });
       }
+      if (isStructureEdit(body)) {
+        const result = await applySourceStructureEdit(root, body);
+        return sendJson(response, 200, { marker: result.marker });
+      }
       if (!isSourceEdit(body)) throw new SourceEditError('The edit request is incomplete.', 400);
       if (body.html.length > 1_000_000) throw new SourceEditError('This edit is too large to save.', 413);
 
@@ -149,6 +159,13 @@ function isResolveRequest(value: unknown): value is {
     && (body.contextMarker === undefined || typeof body.contextMarker === 'string')
     && (body.contextHref === undefined || typeof body.contextHref === 'string')
     && (body.renderedText === undefined || typeof body.renderedText === 'string');
+}
+
+function isStructureEdit(value: unknown): value is SourceStructureEdit {
+  if (!value || typeof value !== 'object') return false;
+  const body = value as Record<string, unknown>;
+  return typeof body.marker === 'string'
+    && (body.operation === 'insert-after' || body.operation === 'delete');
 }
 
 function isSourceEdit(value: unknown): value is SourceEdit {

@@ -8,6 +8,7 @@ const linkFile = '.tmp/e2e-site/src/pages/links.md';
 const listFile = '.tmp/e2e-site/src/pages/lists.md';
 const headingFile = '.tmp/e2e-site/src/pages/headings.md';
 const queueFile = '.tmp/e2e-site/src/pages/queue.md';
+const blocksFile = '.tmp/e2e-site/src/pages/blocks.md';
 
 test('edits an Astro block with keyboard formatting and saves to disk', async ({ page }) => {
   await page.goto('/');
@@ -57,6 +58,9 @@ test('edits a rendered frontmatter title without leaving edit mode', async ({ pa
   const title = page.locator('h1.frontmatter-title');
   await title.click();
   await expect(title).toHaveAttribute('contenteditable', 'true');
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await expect(editor.getByRole('button', { name: 'Add block below' })).toBeDisabled();
+  await expect(editor.getByRole('button', { name: 'Delete block' })).toBeDisabled();
   await title.press('End');
   await title.pressSequentially(' updated');
 
@@ -232,6 +236,34 @@ test('adds and edits a Markdown hyperlink from the toolbar', async ({ page }) =>
   await editor.getByRole('textbox', { name: 'Link URL' }).fill('/updated');
   await editor.getByRole('button', { name: 'Apply link' }).click();
   await expect.poll(async () => readFile(linkFile, 'utf8')).toContain('[this phrase](/updated)');
+});
+
+test('adds, edits, and deletes a source-backed block', async ({ page }) => {
+  const before = await readFile(blocksFile, 'utf8');
+  await page.goto('/blocks');
+  const first = page.locator('main > p').first();
+  await first.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+
+  await editor.getByRole('button', { name: 'Add block below' }).click();
+
+  await expect.poll(async () => readFile(blocksFile, 'utf8')).toContain(
+    'First block.\n\nNew paragraph\n\nSecond block.',
+  );
+  let added = page.locator('main > p').filter({ hasText: 'New paragraph' });
+  await expect(added).toHaveAttribute('contenteditable', 'true');
+  await added.press('Control+a');
+  await added.pressSequentially('Inserted block.');
+  await expect.poll(async () => readFile(blocksFile, 'utf8')).toContain('Inserted block.');
+  await page.waitForTimeout(1_000);
+  added = page.locator('main > p').filter({ hasText: 'Inserted block.' });
+  await added.click();
+  page.once('dialog', (dialog) => dialog.accept());
+
+  await editor.getByRole('button', { name: 'Delete block' }).click();
+
+  await expect.poll(async () => readFile(blocksFile, 'utf8')).toBe(before);
+  await expect(page.locator('main > p')).toHaveCount(2);
 });
 
 test('offers all six heading levels in the toolbar', async ({ page }) => {
