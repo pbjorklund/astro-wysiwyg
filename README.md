@@ -44,7 +44,7 @@ Start Astro with `npm run dev`, then click an editable text block.
 | Save now | `Ctrl+S`, `Cmd+S`, or **Save** |
 | Finish editing | `Escape` or **Done** |
 
-The floating toolbar also has Undo, Bold, Italic, Link, Bullet list, Numbered list, Frontmatter, H1, H2, H3, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. **Frontmatter** opens a form for the current content file's simple one-line fields, including strings, dates, numbers, lists, and booleans. Changes save after 500 ms by default. If Astro reloads a content-collection page after the write, the same block and caret return to edit mode automatically.
+The floating toolbar also has Undo, Bold, Italic, Link, Bullet list, Numbered list, Frontmatter, H1-H6, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. **Frontmatter** opens a form for the current content file's simple one-line fields, including strings, dates, numbers, lists, and booleans. Changes save after 500 ms by default. If Astro reloads a content-collection page after the write, the same block and caret return to edit mode automatically.
 
 ## Dev toolbar controls
 

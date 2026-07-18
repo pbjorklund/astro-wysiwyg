@@ -6,6 +6,7 @@ const markdownFile = '.tmp/e2e-site/src/pages/article.md';
 const cardFile = '.tmp/e2e-site/src/content/articles/example/index.md';
 const linkFile = '.tmp/e2e-site/src/pages/links.md';
 const listFile = '.tmp/e2e-site/src/pages/lists.md';
+const headingFile = '.tmp/e2e-site/src/pages/headings.md';
 
 test('edits an Astro block with keyboard formatting and saves to disk', async ({ page }) => {
   await page.goto('/');
@@ -188,6 +189,20 @@ test('adds and edits a Markdown hyperlink from the toolbar', async ({ page }) =>
   await editor.getByRole('textbox', { name: 'Link URL' }).fill('/updated');
   await editor.getByRole('button', { name: 'Apply link' }).click();
   await expect.poll(async () => readFile(linkFile, 'utf8')).toContain('[this phrase](/updated)');
+});
+
+test('offers all six heading levels in the toolbar', async ({ page }) => {
+  await page.goto('/headings');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+
+  await editor.getByRole('button', { name: 'Heading 6' }).click();
+
+  await expect.poll(async () => readFile(headingFile, 'utf8')).toContain(
+    '###### Turn this paragraph into a level six heading.',
+  );
+  await expect(page.locator('main > h6')).toContainText('level six heading');
 });
 
 test('changes a Markdown paragraph between bullet and numbered lists', async ({ page }) => {

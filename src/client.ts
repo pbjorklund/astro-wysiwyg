@@ -893,6 +893,9 @@ function toolbarMarkup(): string {
       <button type="button" data-tag="h1" aria-label="Heading 1" title="Heading 1 (Alt+1)">H1</button>
       <button type="button" data-tag="h2" aria-label="Heading 2" title="Heading 2 (Alt+2)">H2</button>
       <button type="button" data-tag="h3" aria-label="Heading 3" title="Heading 3 (Alt+3)">H3</button>
+      <button type="button" data-tag="h4" aria-label="Heading 4" title="Heading 4 (Alt+4)">H4</button>
+      <button type="button" data-tag="h5" aria-label="Heading 5" title="Heading 5 (Alt+5)">H5</button>
+      <button type="button" data-tag="h6" aria-label="Heading 6" title="Heading 6 (Alt+6)">H6</button>
       <button type="button" data-tag="p" aria-label="Paragraph">P</button>
       <span class="separator" aria-hidden="true"></span>
       <button type="button" data-action="save">Save</button>
