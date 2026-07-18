@@ -120,6 +120,26 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
 });
 
+test('keeps editing active when Done cannot save', async ({ page }) => {
+  await page.goto('/article');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Simulated save failure.' }),
+    });
+  });
+  await paragraph.pressSequentially(' unsaved');
+
+  const toolbar = page.locator('#astro-wysiwyg-toolbar');
+  await toolbar.getByRole('button', { name: 'Done' }).click();
+
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  await expect(toolbar.getByRole('status')).toHaveText('Simulated save failure.');
+});
+
 test('leaves dynamic Astro expressions uneditable', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('p').filter({ hasText: 'Dynamic text' })).not.toHaveAttribute('data-astro-wysiwyg', /.+/);

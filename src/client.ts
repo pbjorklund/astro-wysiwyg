@@ -120,7 +120,7 @@ export function startEditor(options: EditorOptions): void {
     );
     if (!preferences.enabled) {
       window.clearTimeout(saveTimer);
-      if (active) finishEditing();
+      if (active) void finishEditing();
       for (const element of document.querySelectorAll<HTMLElement>('[data-wysiwyg-added-tabindex]')) {
         element.removeAttribute('tabindex');
         delete element.dataset.wysiwygAddedTabindex;
@@ -330,7 +330,7 @@ export function startEditor(options: EditorOptions): void {
       changeBlockTag(`h${event.code.slice(-1)}`);
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      finishEditing();
+      void finishEditing();
     }
   }
 
@@ -345,7 +345,7 @@ export function startEditor(options: EditorOptions): void {
     event.preventDefault();
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
     else if (isLinkEditorOpen()) closeLinkEditor();
-    else finishEditing();
+    else void finishEditing();
   }
 
   function onToolbarClick(event: Event): void {
@@ -368,7 +368,7 @@ export function startEditor(options: EditorOptions): void {
     else if (button.dataset.action === 'save-frontmatter') void saveFrontmatter();
     else if (button.dataset.action === 'cancel-frontmatter') closeFrontmatterEditor();
     else if (button.dataset.action === 'save') queueSave(active);
-    else if (button.dataset.action === 'done') finishEditing();
+    else if (button.dataset.action === 'done') void finishEditing();
   }
 
   function isFrontmatterEditorOpen(): boolean {
@@ -700,13 +700,20 @@ export function startEditor(options: EditorOptions): void {
     positionToolbar();
   }
 
-  function finishEditing(): void {
+  async function finishEditing(): Promise<void> {
     if (!active) return;
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
     if (isLinkEditorOpen()) closeLinkEditor();
     window.clearTimeout(saveTimer);
     const finished = active;
-    if (hasUnsavedChanges(finished)) queueSave(finished);
+    if (hasUnsavedChanges(finished)) {
+      const saved = await queueSave(finished);
+      if (!saved || active !== finished) return;
+      if (hasUnsavedChanges(finished)) {
+        setStatus('Unsaved');
+        return;
+      }
+    }
     deactivate(finished);
     active = null;
     undoHistory = [];
@@ -721,15 +728,15 @@ export function startEditor(options: EditorOptions): void {
     setStatus('Saved');
   }
 
-  function queueSave(element: HTMLElement): void {
+  function queueSave(element: HTMLElement): Promise<boolean> {
     window.clearTimeout(saveTimer);
     const html = element.innerHTML;
     const text = element.textContent ?? '';
     const tag = element.localName;
     setStatus('Saving...');
-    saveQueue = saveQueue.then(async () => {
+    const save = saveQueue.then(async () => {
       const marker = element.getAttribute(MARKER_ATTRIBUTE);
-      if (!marker) return;
+      if (!marker) return false;
       setStatus('Saving...');
       try {
         const response = await fetch(options.endpoint, {
@@ -744,10 +751,14 @@ export function startEditor(options: EditorOptions): void {
         }
         if (element === active) checkpoint(element, { html, tag });
         setStatus('Saved');
+        return true;
       } catch (error) {
         setStatus(error instanceof Error ? error.message : 'The source file could not be saved.', true);
+        return false;
       }
     });
+    saveQueue = save.then(() => undefined);
+    return save;
   }
 
   function positionToolbar(): void {
