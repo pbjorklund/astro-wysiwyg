@@ -1,0 +1,79 @@
+import { defineToolbarApp } from 'astro/toolbar';
+import {
+  type EditorPreferences,
+  readPreferences,
+  updatePreferences,
+} from './preferences.ts';
+
+const rows: Array<{
+  key: keyof EditorPreferences;
+  name: string;
+  description: string;
+}> = [
+  {
+    key: 'enabled',
+    name: 'Enable editing',
+    description: 'Click source-backed text to edit it on the page.',
+  },
+  {
+    key: 'autosave',
+    name: 'Autosave changes',
+    description: 'Save after you stop typing. Save and Done still work when disabled.',
+  },
+  {
+    key: 'highlights',
+    name: 'Show editable outlines',
+    description: 'Outline source-backed text before you start editing it.',
+  },
+];
+
+export default defineToolbarApp({
+  init(canvas, app) {
+    const windowElement = document.createElement('astro-dev-toolbar-window');
+    const toolbarMetadata = window as Window & {
+      __astro_dev_toolbar__?: { placement?: 'bottom-left' | 'bottom-center' | 'bottom-right' };
+    };
+    windowElement.placement = toolbarMetadata.__astro_dev_toolbar__?.placement ?? 'bottom-center';
+    windowElement.innerHTML = `
+      <style>
+        :host { color-scheme: dark; }
+        header { display: flex; align-items: center; gap: 10px; }
+        h1 { margin: 0; color: #fff; font: 600 22px/1.2 system-ui, sans-serif; }
+        .mark { display: grid; place-items: center; width: 32px; height: 32px; color: #13151a; background: #c4b5fd; border-radius: 8px; font: 700 19px/1 system-ui, sans-serif; }
+        .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; }
+        .setting-row + .setting-row { border-top: 1px solid #343841; }
+        h2 { margin: 0 0 5px; color: #fff; font: 400 16px/1.3 system-ui, sans-serif; }
+        p { margin: 0; max-width: 430px; color: #b9bec7; font: 14px/1.5 system-ui, sans-serif; }
+        footer { margin-top: 8px; padding-top: 14px; border-top: 1px solid #343841; color: #8d929c; font: 13px/1.4 system-ui, sans-serif; }
+      </style>
+      <header><span class="mark" aria-hidden="true">E</span><h1>Page editor</h1></header>
+      <hr />
+      <section class="settings" aria-label="Page editor settings"></section>
+      <footer>Settings are stored in this browser for the current local site.</footer>
+    `;
+
+    const container = windowElement.querySelector<HTMLElement>('.settings');
+    if (!container) return;
+    const preferences = readPreferences();
+    for (const row of rows) {
+      const label = document.createElement('label');
+      label.className = 'setting-row';
+      const copy = document.createElement('span');
+      copy.innerHTML = `<h2>${row.name}</h2><p>${row.description}</p>`;
+      const toggle = document.createElement('astro-dev-toolbar-toggle');
+      toggle.toggleStyle = 'purple';
+      toggle.input.checked = preferences[row.key];
+      toggle.input.setAttribute('aria-label', row.name);
+      toggle.input.addEventListener('change', () => {
+        updatePreferences({ [row.key]: toggle.input.checked });
+      });
+      label.append(copy, toggle);
+      container.append(label);
+    }
+
+    canvas.replaceChildren(windowElement);
+    app.onToolbarPlacementUpdated(({ placement }) => {
+      windowElement.placement = placement;
+    });
+  },
+});

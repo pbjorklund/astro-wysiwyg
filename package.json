@@ -1,0 +1,55 @@
+{
+  "name": "astro-wysiwyg",
+  "version": "0.1.0",
+  "description": "Edit rendered Astro and Markdown text in place and save it to source files during development.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./toolbar-app": {
+      "types": "./dist/toolbar-app.d.ts",
+      "import": "./dist/toolbar-app.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test:e2e": "npm run build && playwright test",
+    "check": "npm run test && npm run build",
+    "prepack": "npm run check"
+  },
+  "keywords": [
+    "astro",
+    "wysiwyg",
+    "contenteditable",
+    "markdown"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "peerDependencies": {
+    "astro": ">=5.0.0 <7.0.0"
+  },
+  "dependencies": {
+    "@astrojs/compiler": "^2.13.1",
+    "turndown": "^7.2.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^24.10.0",
+    "@types/turndown": "^5.0.5",
+    "astro": "^6.4.8",
+    "typescript": "^5.9.3"
+  }
+}
