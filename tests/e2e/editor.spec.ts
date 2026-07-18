@@ -121,6 +121,35 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
 });
 
+test('does not resave an in-flight edit restored after an Astro reload', async ({ page }) => {
+  await page.goto('/pending');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  const session = await page.evaluate(() => {
+    const key = 'astro-wysiwyg-active';
+    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    value.html = `${value.html} <em>pending</em>`;
+    value.saving = true;
+    sessionStorage.setItem(key, JSON.stringify(value));
+    return value;
+  });
+  let saveRequests = 0;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    saveRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ marker: sessionStorageMarker(session) }),
+    });
+  });
+
+  await page.reload();
+  await expect(paragraph).toContainText('pending');
+  await page.waitForTimeout(700);
+
+  expect(saveRequests).toBe(0);
+});
+
 test('keeps editing active when Done cannot save', async ({ page }) => {
   await page.goto('/save-failure');
   const paragraph = page.locator('main > p');
@@ -141,6 +170,19 @@ test('keeps editing active when Done cannot save', async ({ page }) => {
   await expect(toolbar.getByRole('status')).toHaveText('Simulated save failure.');
 });
 
+function sessionStorageMarker(session: { file?: string; start?: number }): string {
+  const marker = {
+    version: 1,
+    file: session.file ?? 'src/pages/pending.md',
+    start: session.start ?? 0,
+    end: session.start ?? 0,
+    original: '',
+    format: 'markdown',
+    tag: 'p',
+  };
+  return Buffer.from(JSON.stringify(marker)).toString('base64url');
+}
+
 test('leaves dynamic Astro expressions uneditable', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('p').filter({ hasText: 'Dynamic text' })).not.toHaveAttribute('data-astro-wysiwyg', /.+/);
@@ -155,6 +197,7 @@ test('edits rendered card frontmatter through its article link', async ({ page }
   await title.pressSequentially('Edited rendered card');
   await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Edited rendered card"');
   await expect(title).toHaveAttribute('contenteditable', 'true');
+  await page.waitForTimeout(2_500);
 });
 
 test('adds and edits a Markdown hyperlink from the toolbar', async ({ page }) => {
@@ -219,6 +262,21 @@ test('changes a Markdown paragraph between bullet and numbered lists', async ({ 
   await expect(list).toHaveAttribute('contenteditable', 'true');
   await editor.getByRole('button', { name: 'Numbered list' }).click();
   await expect.poll(async () => readFile(listFile, 'utf8')).toContain('1. Turn this paragraph into a list.');
+});
+
+test('undoes a saved wrapped-paragraph edit after Astro reload without repeat writes', async ({ page }) => {
+  const before = await readFile(cardFile, 'utf8');
+  await page.goto('/articles/example');
+  const paragraph = page.locator('[data-article-version-panel="latest"] > p');
+  await paragraph.click();
+  await paragraph.press('End');
+  await paragraph.pressSequentially(' XUNDOX');
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('XUNDOX');
+  await page.waitForTimeout(2_500);
+
+  await page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Undo' }).click();
+
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toBe(before);
 });
 
 test('undoes a saved card edit after Astro reloads', async ({ page }) => {

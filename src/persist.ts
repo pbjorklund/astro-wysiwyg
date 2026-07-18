@@ -67,8 +67,8 @@ export async function applySourceEdit(
   return {
     marker: encodeMarker(createMarker(
       marker.file,
-      start,
-      start + replacement.length,
+      marker.start,
+      marker.start + replacement.length,
       replacement,
       marker.format,
       tag,

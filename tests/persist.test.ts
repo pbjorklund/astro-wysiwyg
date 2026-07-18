@@ -43,6 +43,18 @@ test('saves rich HTML as Markdown while preserving surrounding source', async (t
   assert.equal(decodeMarker(result.marker).original, 'New **bold** and _italic_ text');
 });
 
+test('keeps marker coordinates stable when rendered positions exclude frontmatter', async (t) => {
+  const source = '---\ntitle: Example\n---\nBody text\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = encodeMarker(createMarker('page.md', 0, 9, 'Body text', 'markdown', 'p'));
+
+  const result = await applySourceEdit(root, { marker: token, html: 'Changed body' });
+
+  assert.equal(await readFile(file, 'utf8'), '---\ntitle: Example\n---\nChanged body\n');
+  assert.equal(decodeMarker(result.marker).start, 0);
+});
+
 test('updates a quoted frontmatter title as plain text', async (t) => {
   const source = '---\ntitle: "Old title"\n---\nBody\n';
   const { root, file } = await fixture(source);

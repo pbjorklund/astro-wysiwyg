@@ -54,6 +54,8 @@ interface ActiveSession {
   tag?: string;
   caret?: number;
   history?: EditSnapshot[];
+  saving?: boolean;
+  suppressAutosave?: boolean;
 }
 
 export function startEditor(options: EditorOptions): void {
@@ -68,6 +70,8 @@ export function startEditor(options: EditorOptions): void {
   let editingLink: HTMLAnchorElement | undefined;
   let frontmatterContext: string | undefined;
   let frontmatterFields: FrontmatterFieldResponse[] = [];
+  let activeSaveInFlight = false;
+  let suppressRestoredAutosave = false;
   const host = document.createElement('div');
   host.id = HOST_ID;
   const shadow = host.attachShadow({ mode: 'open' });
@@ -158,6 +162,7 @@ export function startEditor(options: EditorOptions): void {
     }
     if (!block) return;
     if (target.closest('a')) event.preventDefault();
+    suppressRestoredAutosave = false;
     void activate(block);
   }
 
@@ -189,6 +194,7 @@ export function startEditor(options: EditorOptions): void {
     if (active) return;
     const session = readActiveSession();
     if (!session || session.pathname !== location.pathname) return;
+    suppressRestoredAutosave = Boolean(session.saving || session.suppressAutosave);
     let block: HTMLElement | undefined;
     if (session.sourceFile && session.sourceLocation) {
       block = [...document.querySelectorAll<HTMLElement>(SOURCE_SELECTOR)]
@@ -215,7 +221,7 @@ export function startEditor(options: EditorOptions): void {
     }
     if (session.html !== undefined && restored.innerHTML !== session.html) {
       restored.innerHTML = session.html;
-      if (preferences.autosave) {
+      if (preferences.autosave && !suppressRestoredAutosave) {
         window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(() => queueSave(restored), options.saveDelay);
       }
@@ -239,6 +245,8 @@ export function startEditor(options: EditorOptions): void {
       tag: active.localName,
       caret: getCaretOffset(active),
       history: undoHistory,
+      saving: activeSaveInFlight,
+      suppressAutosave: suppressRestoredAutosave,
     };
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
@@ -282,6 +290,7 @@ export function startEditor(options: EditorOptions): void {
   function onInput(event: Event): void {
     if (event.target !== active || !active) return;
     window.clearTimeout(saveTimer);
+    suppressRestoredAutosave = false;
     setStatus('Unsaved');
     rememberActiveSession();
     updateUndoButton();
@@ -756,13 +765,24 @@ export function startEditor(options: EditorOptions): void {
 
   function queueSave(element: HTMLElement): Promise<boolean> {
     window.clearTimeout(saveTimer);
+    if (element === active) {
+      activeSaveInFlight = true;
+      suppressRestoredAutosave = false;
+      rememberActiveSession();
+    }
     const html = element.innerHTML;
     const text = element.textContent ?? '';
     const tag = element.localName;
     setStatus('Saving...');
     const save = saveQueue.then(async () => {
       const marker = element.getAttribute(MARKER_ATTRIBUTE);
-      if (!marker) return false;
+      if (!marker) {
+        if (element === active) {
+          activeSaveInFlight = false;
+          rememberActiveSession();
+        }
+        return false;
+      }
       setStatus('Saving...');
       try {
         const response = await fetch(options.endpoint, {
@@ -775,10 +795,18 @@ export function startEditor(options: EditorOptions): void {
         if (element.getAttribute(MARKER_ATTRIBUTE) === marker) {
           element.setAttribute(MARKER_ATTRIBUTE, body.marker);
         }
-        if (element === active) checkpoint(element, { html, tag });
+        if (element === active) {
+          activeSaveInFlight = false;
+          suppressRestoredAutosave = sameSnapshot(snapshot(element), { html, tag });
+          checkpoint(element, { html, tag });
+        }
         setStatus('Saved');
         return true;
       } catch (error) {
+        if (element === active) {
+          activeSaveInFlight = false;
+          rememberActiveSession();
+        }
         setStatus(error instanceof Error ? error.message : 'The source file could not be saved.', true);
         return false;
       }
