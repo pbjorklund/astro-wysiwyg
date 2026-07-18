@@ -5,6 +5,7 @@ export interface EditorPreferences {
 }
 
 export const PREFERENCES_EVENT = 'astro-wysiwyg:preferences';
+export const FRONTMATTER_EVENT = 'astro-wysiwyg:open-frontmatter';
 export const PREFERENCES_KEY = 'astro-wysiwyg-preferences';
 export const DEFAULT_PREFERENCES: EditorPreferences = {
   enabled: true,

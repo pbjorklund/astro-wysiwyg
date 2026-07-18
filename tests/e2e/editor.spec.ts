@@ -69,14 +69,13 @@ test('edits a rendered frontmatter title without leaving edit mode', async ({ pa
   expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('3');
 });
 
-test('edits article frontmatter from the toolbar form', async ({ page }) => {
+test('edits article frontmatter from the Astro dev-toolbar app without selecting content', async ({ page }) => {
   await page.goto('/article');
-  const paragraph = page.locator('main > p');
-  await paragraph.click();
-  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
-  const editor = page.locator('#astro-wysiwyg-toolbar');
-  await editor.getByRole('button', { name: 'Frontmatter' }).click();
-  const dialog = editor.getByRole('dialog', { name: 'Edit frontmatter' });
+  const formattingToolbar = page.locator('#astro-wysiwyg-toolbar');
+  await expect(formattingToolbar.getByRole('button', { name: 'Frontmatter' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Page editor' }).click();
+  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  const dialog = formattingToolbar.getByRole('dialog', { name: 'Edit frontmatter' });
   await expect(dialog).toBeVisible();
   await dialog.getByRole('textbox', { name: 'title' }).fill('Edited in frontmatter');
   await dialog.getByRole('textbox', { name: 'tags' }).fill('astro, editing');

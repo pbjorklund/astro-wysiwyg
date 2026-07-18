@@ -1,4 +1,5 @@
 import {
+  FRONTMATTER_EVENT,
   PREFERENCES_EVENT,
   type EditorPreferences,
   readPreferences,
@@ -98,6 +99,7 @@ export function startEditor(options: EditorOptions): void {
   document.addEventListener('input', onInput, true);
   document.addEventListener('selectionchange', rememberActiveSession);
   document.addEventListener(PREFERENCES_EVENT, onPreferences);
+  document.addEventListener(FRONTMATTER_EVENT, () => void openFrontmatterEditor());
   window.addEventListener('scroll', positionToolbar, true);
   window.addEventListener('resize', positionToolbar);
   shadow.addEventListener('pointerdown', (event) => {
@@ -336,7 +338,9 @@ export function startEditor(options: EditorOptions): void {
 
   function onToolbarKeyDown(event: Event): void {
     if (!(event instanceof KeyboardEvent)) return;
-    if (event.key === 'Enter' && event.target instanceof HTMLInputElement) {
+    if (event.key === 'Enter'
+      && event.target instanceof HTMLInputElement
+      && event.target.closest('.link-editor')) {
       event.preventDefault();
       applyLink();
       return;
@@ -352,7 +356,17 @@ export function startEditor(options: EditorOptions): void {
     const button = event.composedPath().find(
       (item): item is HTMLButtonElement => item instanceof HTMLButtonElement,
     );
-    if (!button || !active) return;
+    if (!button) return;
+    const action = button.dataset.action;
+    if (action === 'save-frontmatter') {
+      void saveFrontmatter();
+      return;
+    }
+    if (action === 'cancel-frontmatter') {
+      closeFrontmatterEditor();
+      return;
+    }
+    if (!active) return;
     const command = button.dataset.command;
     const tag = button.dataset.tag;
     const list = button.dataset.list;
@@ -364,31 +378,43 @@ export function startEditor(options: EditorOptions): void {
     else if (button.dataset.action === 'apply-link') applyLink();
     else if (button.dataset.action === 'remove-link') removeLink();
     else if (button.dataset.action === 'cancel-link') closeLinkEditor();
-    else if (button.dataset.action === 'frontmatter') void openFrontmatterEditor();
-    else if (button.dataset.action === 'save-frontmatter') void saveFrontmatter();
-    else if (button.dataset.action === 'cancel-frontmatter') closeFrontmatterEditor();
     else if (button.dataset.action === 'save') queueSave(active);
     else if (button.dataset.action === 'done') void finishEditing();
   }
 
+  function findFrontmatterContextMarker(): string | undefined {
+    const candidates = [
+      active,
+      ...document.querySelectorAll<HTMLElement>(`[${MARKER_ATTRIBUTE}]`),
+    ];
+    for (const element of candidates) {
+      const token = element?.getAttribute(MARKER_ATTRIBUTE);
+      const marker = decodeClientMarker(token ?? null);
+      if (token && marker && /\.(?:md|mdx|mdoc)$/i.test(marker.file)) return token;
+    }
+    return undefined;
+  }
+
   function isFrontmatterEditorOpen(): boolean {
-    const editor = toolbar.querySelector<HTMLElement>('.frontmatter-editor');
-    return Boolean(editor && !editor.hidden);
+    return shadow.querySelector<HTMLDialogElement>('.frontmatter-editor')?.open ?? false;
   }
 
   async function openFrontmatterEditor(): Promise<void> {
-    if (!active) return;
     if (isLinkEditorOpen()) closeLinkEditor();
-    const marker = active.getAttribute(MARKER_ATTRIBUTE);
-    const editor = toolbar.querySelector<HTMLElement>('.frontmatter-editor');
-    const fields = toolbar.querySelector<HTMLElement>('.frontmatter-fields');
-    if (!marker || !editor || !fields) return;
+    const marker = findFrontmatterContextMarker();
+    const editor = shadow.querySelector<HTMLDialogElement>('.frontmatter-editor');
+    const fields = shadow.querySelector<HTMLElement>('.frontmatter-fields');
+    if (!editor || !fields) return;
     frontmatterContext = marker;
     frontmatterFields = [];
-    editor.hidden = false;
+    if (!editor.open) editor.showModal();
     fields.replaceChildren();
     setFrontmatterMessage('Loading...');
-    positionToolbar();
+
+    if (!marker) {
+      setFrontmatterMessage('Open a Markdown or MDX page with source-backed content.');
+      return;
+    }
 
     try {
       const response = await fetch(options.endpoint, {
@@ -401,6 +427,7 @@ export function startEditor(options: EditorOptions): void {
       frontmatterFields = body.fields;
       renderFrontmatterFields(fields, frontmatterFields);
       setFrontmatterMessage(frontmatterFields.length ? '' : 'No simple frontmatter fields were found.');
+      fields.querySelector<HTMLInputElement>('input')?.focus();
     } catch (error) {
       setFrontmatterMessage(error instanceof Error ? error.message : 'Frontmatter could not be loaded.');
     }
@@ -431,7 +458,7 @@ export function startEditor(options: EditorOptions): void {
     if (!frontmatterContext) return;
     const values: Record<string, string | boolean> = {};
     for (const field of frontmatterFields) {
-      const input = toolbar.querySelector<HTMLInputElement>(
+      const input = shadow.querySelector<HTMLInputElement>(
         `[data-frontmatter-field="${CSS.escape(field.name)}"]`,
       );
       if (!input) continue;
@@ -464,17 +491,16 @@ export function startEditor(options: EditorOptions): void {
   }
 
   function closeFrontmatterEditor(): void {
-    const editor = toolbar.querySelector<HTMLElement>('.frontmatter-editor');
-    if (editor) editor.hidden = true;
+    const editor = shadow.querySelector<HTMLDialogElement>('.frontmatter-editor');
+    if (editor?.open) editor.close();
     frontmatterContext = undefined;
     frontmatterFields = [];
     setFrontmatterMessage('');
     active?.focus({ preventScroll: true });
-    positionToolbar();
   }
 
   function setFrontmatterMessage(message: string): void {
-    const element = toolbar.querySelector<HTMLElement>('.frontmatter-message');
+    const element = shadow.querySelector<HTMLElement>('.frontmatter-message');
     if (element) element.textContent = message;
   }
 
@@ -858,7 +884,8 @@ function toolbarMarkup(): string {
       .link-editor { display: flex; align-items: center; gap: 4px; }
       .link-editor input { width: min(260px, 42vw); min-height: 34px; padding: 0 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
       .link-error { max-width: 220px; color: #fecaca; font-size: 12px; }
-      .frontmatter-editor { position: absolute; top: calc(100% + 8px); left: 0; width: min(420px, calc(100vw - 16px)); max-height: min(520px, 70vh); padding: 14px; overflow-y: auto; color: #f8fafc; background: #111827; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 28px rgb(0 0 0 / 45%); pointer-events: auto; }
+      .frontmatter-editor { width: min(420px, calc(100vw - 32px)); max-height: min(620px, calc(100vh - 32px)); padding: 16px; overflow-y: auto; color: #f8fafc; background: #111827; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 28px rgb(0 0 0 / 45%); pointer-events: auto; }
+      .frontmatter-editor::backdrop { background: rgb(15 23 42 / 65%); }
       .frontmatter-editor h2 { margin: 0 0 12px; font: 600 17px/1.2 ui-sans-serif, system-ui, sans-serif; }
       .frontmatter-fields { display: grid; gap: 9px; }
       .frontmatter-field { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 10px; }
@@ -881,7 +908,6 @@ function toolbarMarkup(): string {
       <button type="button" data-action="link" aria-label="Link" title="Link (Ctrl+K)">Link</button>
       <button type="button" data-list="ul" aria-label="Bullet list" title="Bullet list (Ctrl+Shift+8)">• List</button>
       <button type="button" data-list="ol" aria-label="Numbered list" title="Numbered list (Ctrl+Shift+7)">1. List</button>
-      <button type="button" data-action="frontmatter" aria-label="Frontmatter">Frontmatter</button>
       <span class="link-editor" role="group" aria-label="Edit link" hidden>
         <label><input type="text" inputmode="url" aria-label="Link URL" placeholder="https://example.com or /page" /></label>
         <button type="button" data-action="apply-link" aria-label="Apply link">Apply</button>
@@ -901,15 +927,15 @@ function toolbarMarkup(): string {
       <button type="button" data-action="save">Save</button>
       <button type="button" data-action="done">Done</button>
       <span role="status" aria-live="polite">Editing</span>
-      <section class="frontmatter-editor" role="dialog" aria-label="Edit frontmatter" hidden>
-        <h2>Frontmatter</h2>
-        <div class="frontmatter-fields"></div>
-        <div class="frontmatter-actions">
-          <button type="button" data-action="save-frontmatter">Save frontmatter</button>
-          <button type="button" data-action="cancel-frontmatter">Cancel frontmatter</button>
-          <span class="frontmatter-message" role="alert"></span>
-        </div>
-      </section>
     </div>
+    <dialog class="frontmatter-editor" aria-label="Edit frontmatter">
+      <h2>Frontmatter</h2>
+      <div class="frontmatter-fields"></div>
+      <div class="frontmatter-actions">
+        <button type="button" data-action="save-frontmatter">Save frontmatter</button>
+        <button type="button" data-action="cancel-frontmatter">Cancel</button>
+        <span class="frontmatter-message" role="alert"></span>
+      </div>
+    </dialog>
   `;
 }
