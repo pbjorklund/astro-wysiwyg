@@ -88,9 +88,17 @@ Other dynamic Astro expressions are not editable. MDX blocks containing componen
 
 Source writes run only under `astro dev`. The endpoint accepts same-origin JSON requests, confines file paths to the Astro project root, allows only Astro and Markdown source extensions, and rejects stale or ambiguous source ranges.
 
-Run the checks with:
+Run the fast Node tests and TypeScript build with:
 
 ```sh
-npm run check
-npm run test:e2e
+npm run check:unit
 ```
+
+Run the full gate with:
+
+```sh
+npx playwright install chromium
+npm run check
+```
+
+The full gate runs the unit, integration, and Playwright suites. It merges server and browser coverage, then requires 100% statements, branches, functions, and lines for every included file. The HTML report is written to `.coverage/report/index.html`.

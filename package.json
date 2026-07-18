@@ -23,10 +23,14 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test": "npm run test:unit",
+    "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
     "test:e2e": "npm run build && playwright test",
-    "check": "npm run test && npm run build",
-    "prepack": "npm run check"
+    "test:coverage:server": "node -e \"require('node:fs').rmSync('.coverage', { recursive: true, force: true })\" && c8 --all --include=src/**/*.ts --exclude=src/client.ts --reporter=json --reports-dir=.coverage/server node --test --experimental-strip-types tests/*.test.ts",
+    "test:coverage": "npm run test:coverage:server && npm run test:e2e && node tests/report-coverage.mjs",
+    "check:unit": "npm run test:unit && npm run build",
+    "check": "npm run test:coverage",
+    "prepack": "npm run check:unit"
   },
   "keywords": [
     "astro",
@@ -47,9 +51,16 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "@types/istanbul-lib-coverage": "^2.0.6",
     "@types/node": "^24.10.0",
     "@types/turndown": "^5.0.5",
     "astro": "^6.4.8",
-    "typescript": "^5.9.3"
+    "c8": "^12.0.0",
+    "happy-dom": "^20.11.0",
+    "istanbul-lib-coverage": "^3.2.2",
+    "istanbul-lib-report": "^3.0.1",
+    "istanbul-reports": "^3.2.0",
+    "typescript": "^5.9.3",
+    "vite-plugin-istanbul": "^9.0.1"
   }
 }

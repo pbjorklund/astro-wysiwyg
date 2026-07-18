@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -73,6 +73,105 @@ test('rejects invalid typed frontmatter without changing the file', async (t) =>
     /must use YYYY-MM-DD/,
   );
   assert.equal(await readFile(file, 'utf8'), source);
+});
+
+test('parses scalar fallbacks and skips multiline frontmatter', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-'));
+  const file = path.join(root, 'post.md');
+  const source = `---
+brokenList: [not json]
+brokenQuote: "broken\\x"
+single: 'it''s valid'
+plain: plain value
+multiline: |
+folded: >
+---
+Body.
+`;
+  await writeFile(file, source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = encodeMarker(createMarker('post.md', 0, 0, '', 'markdown', 'p'));
+
+  assert.deepEqual(await readFrontmatterFields(root, marker), [
+    { name: 'brokenList', type: 'string', value: '[not json]' },
+    { name: 'brokenQuote', type: 'string', value: 'broken\\x' },
+    { name: 'single', type: 'string', value: "it's valid" },
+    { name: 'plain', type: 'string', value: 'plain value' },
+  ]);
+});
+
+test('serializes every editable frontmatter type', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-'));
+  const file = path.join(root, 'post.md');
+  const source = `---
+enabled: true
+count: 1
+publishedAt: 2026-01-01
+tags: ["one"]
+single: 'old'
+double: "old"
+plain: old
+unsafe: old
+---
+Body.
+`;
+  await writeFile(file, source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = encodeMarker(createMarker('post.md', 0, 0, '', 'markdown', 'p'));
+
+  await updateFrontmatterFields(root, marker, {
+    enabled: false,
+    count: '2.5',
+    publishedAt: '2026-02-02',
+    tags: '',
+    single: "author's",
+    double: 'new',
+    plain: 'safe value',
+    unsafe: 'Needs: quotes',
+  });
+
+  assert.equal(await readFile(file, 'utf8'), `---
+enabled: false
+count: 2.5
+publishedAt: 2026-02-02
+tags: []
+single: 'author''s'
+double: "new"
+plain: safe value
+unsafe: "Needs: quotes"
+---
+Body.
+`);
+  await assert.rejects(updateFrontmatterFields(root, marker, { missing: 'value' }), /does not exist/);
+});
+
+test('rejects unsupported and symlinked frontmatter files', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-outside-'));
+  await writeFile(path.join(root, 'post.txt'), '---\ntitle: Text\n---\n');
+  await writeFile(path.join(outside, 'post.md'), '---\ntitle: Outside\n---\n');
+  await symlink(path.join(outside, 'post.md'), path.join(root, 'linked.md'));
+  t.after(() => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(outside, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(
+    readFrontmatterFields(root, encodeMarker(createMarker('post.txt', 0, 0, '', 'markdown', 'p'))),
+    /no editable frontmatter/,
+  );
+  await assert.rejects(
+    readFrontmatterFields(root, encodeMarker(createMarker('linked.md', 0, 0, '', 'markdown', 'p'))),
+    /outside the Astro project root/,
+  );
+});
+
+test('rejects content files without frontmatter', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-'));
+  await writeFile(path.join(root, 'post.md'), 'Body only.\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = encodeMarker(createMarker('post.md', 0, 0, '', 'markdown', 'p'));
+  await assert.rejects(readFrontmatterFields(root, marker), /has no frontmatter/);
 });
 
 test('rejects a frontmatter context outside the project root', async (t) => {

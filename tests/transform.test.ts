@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMarker, decodeMarker, encodeMarker } from '../src/marker.ts';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { annotateAstroSource, resolveAstroSourceMarker } from '../src/astro-transform.ts';
@@ -28,13 +28,24 @@ test('annotates static Astro blocks without changing their source range', async 
 test('resolves Astro dev source locations to safe static blocks', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-resolve-'));
   const file = path.join(root, 'page.astro');
-  const source = '<main>\n  <p class="lead">Editable text</p>\n  <p>{dynamic}</p>\n</main>';
+  const source = '<main>\n  <p class="lead">Editable text</p>\n  <p>{dynamic}</p>\n  <p>{dynamic} suffix</p>\n</main>';
   await writeFile(file, source);
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const token = await resolveAstroSourceMarker(root, file, '2:19');
   assert.equal(decodeMarker(token).original, '<p class="lead">Editable text</p>');
   await assert.rejects(resolveAstroSourceMarker(root, file, '3:6'), /not a static editable block/);
+  await assert.rejects(resolveAstroSourceMarker(root, file, '4:6'), /not a static editable block/);
+});
+
+test('chooses the smallest nested static Astro block', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-nested-'));
+  const file = path.join(root, 'page.astro');
+  await writeFile(file, '<ul><li><p>Nested text</p></li></ul>');
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const token = await resolveAstroSourceMarker(root, file, '1:13');
+  assert.equal(decodeMarker(token).original, '<p>Nested text</p>');
 });
 
 test('resolves a dynamic data title through the current content marker', async (t) => {
@@ -84,6 +95,127 @@ test('resolves a rendered article card through its linked content slug', async (
   assert.equal(marker.file, 'src/content/articles/example/index.md');
   assert.equal(marker.format, 'frontmatter');
   assert.equal(marker.original, '"Rendered card title"');
+
+  const singular = await resolveAstroSourceMarker(root, pageFile, '1:42', {
+    contextHref: '/article/example',
+    renderedText: 'Rendered card title',
+  });
+  assert.equal(decodeMarker(singular).file, 'src/content/articles/example/index.md');
+});
+
+test('rejects unsafe Astro source files and invalid locations', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-resolve-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-outside-'));
+  await writeFile(path.join(root, 'page.md'), 'Text');
+  await writeFile(path.join(root, 'page.astro'), '<p>Text</p>');
+  await writeFile(path.join(outside, 'outside.astro'), '<p>Outside</p>');
+  await symlink(path.join(outside, 'outside.astro'), path.join(root, 'linked.astro'));
+  t.after(() => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(outside, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(resolveAstroSourceMarker(root, '../outside.astro', '1:1'), /outside/);
+  await assert.rejects(resolveAstroSourceMarker(root, 'linked.astro', '1:1'), /outside/);
+  await assert.rejects(resolveAstroSourceMarker(root, 'page.md', '1:1'), /Only Astro/);
+  for (const location of ['bad', '0:1', '1:0', '2:1', '1:99']) {
+    await assert.rejects(resolveAstroSourceMarker(root, 'page.astro', location), /location is invalid/);
+  }
+});
+
+test('rejects unresolved linked and contextual frontmatter', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-context-'));
+  const pageFile = path.join(root, 'page.astro');
+  await writeFile(pageFile, '<h1>{article.data.title}</h1>');
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:10', { contextHref: '/', renderedText: 'Title' }),
+    /could not be identified/,
+  );
+  await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:10', { contextHref: '/articles/missing', renderedText: 'Title' }),
+    /No linked content frontmatter/,
+  );
+  const astroContext = encodeMarker(createMarker('page.astro', 0, 1, '<', 'astro', 'p'));
+  await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:10', {
+      contextMarker: astroContext,
+      renderedText: 'Title',
+    }),
+    /could not be identified/,
+  );
+});
+
+test('validates contextual frontmatter files and rendered values', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-context-'));
+  const pageFile = path.join(root, 'src/page.astro');
+  await mkdir(path.dirname(pageFile), { recursive: true });
+  await writeFile(pageFile, '<h1>{article.data.title}</h1>');
+  const cases = [
+    ['outside', '../outside.md', '', /outside/],
+    ['extension', 'content.txt', '---\ntitle: Title\n---\n', /no editable frontmatter/],
+    ['frontmatter', 'plain.md', 'Body', /no editable frontmatter/],
+    ['field', 'missing.md', '---\ndescription: Text\n---\n', /field was not found/],
+    ['mismatch', 'mismatch.md', '---\ntitle: Other\n---\n', /does not match/],
+  ] as const;
+  for (const [, relative, source] of cases.slice(1)) await writeFile(path.join(root, relative), source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  for (const [, relative, , error] of cases) {
+    const context = encodeMarker(createMarker(relative, 0, 0, '', 'markdown', 'p'));
+    await assert.rejects(
+      resolveAstroSourceMarker(root, pageFile, '1:10', { contextMarker: context, renderedText: 'Title' }),
+      error,
+    );
+  }
+});
+
+test('rejects contextual frontmatter symlinks that leave the root', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-context-'));
+  const outside = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-outside-'));
+  const pageFile = path.join(root, 'page.astro');
+  await writeFile(pageFile, '<h1>{article.data.title}</h1>');
+  await writeFile(path.join(outside, 'post.md'), '---\ntitle: Title\n---\n');
+  await symlink(path.join(outside, 'post.md'), path.join(root, 'post.md'));
+  t.after(() => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(outside, { recursive: true, force: true }),
+  ]));
+  const context = encodeMarker(createMarker('post.md', 0, 0, '', 'markdown', 'p'));
+  await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:10', { contextMarker: context, renderedText: 'Title' }),
+    /outside/,
+  );
+});
+
+test('resolves single-quoted, malformed-double-quoted, and plain frontmatter scalars', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-scalars-'));
+  const pageFile = path.join(root, 'page.astro');
+  await writeFile(pageFile, '<h1>{article.data.title}</h1>');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [name, raw, rendered] of [
+    ['single.md', "'Author''s title'", "Author's title"],
+    ['broken.md', '"Broken\\x"', 'Broken\\x'],
+    ['plain.md', 'Plain title', 'Plain title'],
+  ]) {
+    await writeFile(path.join(root, name), `---\ntitle: ${raw}\n---\nBody`);
+    const context = encodeMarker(createMarker(name, 0, 0, '', 'frontmatter', 'p'));
+    const token = await resolveAstroSourceMarker(root, pageFile, '1:10', {
+      contextMarker: context,
+      renderedText: rendered,
+    });
+    assert.equal(decodeMarker(token).original, raw);
+  }
+});
+
+test('handles Astro annotation boundaries and complex opening tags', async () => {
+  assert.equal(await annotateAstroSource('<p>Text</p>', '/project', '/project'), null);
+  assert.equal(await annotateAstroSource('<p>Text</p>', '/outside/page.astro', '/project'), null);
+  assert.equal(await annotateAstroSource('<Component>Text</Component>', '/project/page.astro', '/project'), null);
+  const source = '<p title=">" data-value={{ text: ">" }}>Text<!-- note --></p>';
+  const transformed = await annotateAstroSource(source, '/project/page.astro?query', '/project');
+  assert.match(transformed ?? '', /data-astro-wysiwyg=/);
 });
 
 test('annotates positioned Markdown paragraphs and headings', () => {
@@ -136,6 +268,33 @@ test('annotates a static Markdown list as one editable block', () => {
 
   assert.equal(decodeMarker(String(tree.children[0].properties['data-astro-wysiwyg'])).tag, 'ul');
   assert.equal(tree.children[0].children[0].properties['data-astro-wysiwyg'], undefined);
+});
+
+test('skips unsafe and incomplete Markdown nodes while creating missing properties', () => {
+  const transform = rehypeEditableBlocks({ root: '/project' });
+  const paragraph = {
+    type: 'element', tagName: 'p',
+    children: [{ type: 'element', tagName: 'em', children: [{ type: 'text', value: 'Text' }] }],
+    position: { start: { offset: 0 }, end: { offset: 4 } },
+  };
+  const tree = {
+    type: 'root',
+    children: [
+      { type: 'element', tagName: 'aside', children: [], position: { start: { offset: 0 }, end: { offset: 4 } } },
+      { type: 'element', tagName: 'p', children: [{ type: 'text', value: 'No position' }] },
+      { type: 'element', tagName: 'p', position: { start: { offset: 0 }, end: { offset: 4 } } },
+      { type: 'element', tagName: 'p', children: [{ type: 'element', tagName: 'em' }], position: { start: { offset: 0 }, end: { offset: 4 } } },
+      { type: 'element', tagName: 'p', children: [{ type: 'text', value: '' }], position: { start: { offset: 0 }, end: { offset: 0 } } },
+      paragraph,
+    ],
+  };
+
+  transform(tree, { value: 'Text' });
+  transform(tree, { path: '/outside/page.md', value: 'Text' });
+  transform(tree, { path: '/project/page.md', value: 'Text' });
+
+  assert.ok(paragraph.properties);
+  assert.match(String(paragraph.properties['data-astro-wysiwyg']), /.+/);
 });
 
 test('does not annotate Markdown blocks containing MDX components', () => {

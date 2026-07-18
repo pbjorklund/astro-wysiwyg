@@ -71,7 +71,7 @@ function parseFrontmatter(source: string): ParsedField[] {
   for (const match of frontmatter.matchAll(pattern)) {
     const original = match[2].trim();
     if (!original || original === '|' || original === '>') continue;
-    const start = (match.index ?? 0) + match[0].indexOf(match[2]) + match[2].indexOf(original);
+    const start = match.index + match[0].indexOf(match[2]) + match[2].indexOf(original);
     const parsed = parseValue(original);
     fields.push({
       name: match[1],

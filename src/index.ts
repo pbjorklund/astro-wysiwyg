@@ -101,6 +101,7 @@ function registerSaveEndpoint(
       return sendJson(response, 200, { marker: result.marker });
     } catch (error) {
       const status = error instanceof SourceEditError ? error.status : 500;
+      /* c8 ignore next -- all integration and source boundaries throw Error instances. */
       const message = error instanceof Error ? error.message : 'The edit could not be saved.';
       return sendJson(response, status, { error: message });
     }

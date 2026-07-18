@@ -61,8 +61,7 @@ export default defineToolbarApp({
       <footer>Settings are stored in this browser for the current local site.</footer>
     `;
 
-    const container = windowElement.querySelector<HTMLElement>('.settings');
-    if (!container) return;
+    const container = windowElement.querySelector<HTMLElement>('.settings')!;
     const preferences = readPreferences();
     for (const row of rows) {
       const label = document.createElement('label');

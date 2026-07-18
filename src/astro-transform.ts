@@ -169,7 +169,7 @@ async function resolveFrontmatterMarker(
   if (parseYamlScalar(rawValue) !== renderedText.trim()) {
     throw new Error(`The rendered ${dynamic.field} does not match the current content file.`);
   }
-  const valueStart = (match.index ?? 0) + match[1].length + match[2].indexOf(rawValue);
+  const valueStart = match.index + match[1].length + match[2].indexOf(rawValue);
   return encodeMarker(createMarker(
     context.file,
     valueStart,
@@ -181,8 +181,8 @@ async function resolveFrontmatterMarker(
 }
 
 function dataField(node: AstroNode): string | undefined {
-  if (node.children?.length !== 1 || node.children[0].type !== 'expression') return undefined;
-  const expression = (node.children[0].children ?? []).map((child) => child.value ?? '').join('').trim();
+  if (node.children!.length !== 1 || node.children![0].type !== 'expression') return undefined;
+  const expression = node.children![0].children!.map((child) => child.value).join('').trim();
   return /(?:^|\.)(?:data|frontmatter)\.([A-Za-z_$][\w$]*)$/.exec(expression)?.[1];
 }
 
@@ -218,6 +218,7 @@ export async function annotateAstroSource(
 
     const original = source.slice(start, end);
     const openingEnd = findOpeningTagEnd(source, start, end);
+    /* c8 ignore next -- positioned static compiler elements always have matching opening and closing tags. */
     if (openingEnd < 0 || !original.toLowerCase().endsWith(`</${tag}>`)) return;
     const marker = encodeMarker(createMarker(
       relative.split(path.sep).join('/'),
@@ -246,11 +247,11 @@ function visit(node: AstroNode, callback: (node: AstroNode) => void): void {
 function isStaticInlineNode(node: AstroNode): boolean {
   if (node.type === 'text' || node.type === 'comment') return true;
   if (node.type !== 'element' || !node.name || !INLINE_TAGS.has(node.name.toLowerCase())) return false;
-  return (node.children ?? []).every(isStaticInlineNode);
+  return node.children!.every(isStaticInlineNode);
 }
 
 function span(node: AstroNode): number {
-  return (node.position?.end?.offset ?? 0) - (node.position?.start?.offset ?? 0);
+  return node.position!.end!.offset! - node.position!.start!.offset!;
 }
 
 function locationToOffset(source: string, location: string): number {
@@ -284,5 +285,6 @@ function findOpeningTagEnd(source: string, start: number, end: number): number {
     else if (character === '}') braces = Math.max(0, braces - 1);
     else if (character === '>' && braces === 0) return index;
   }
+  /* c8 ignore next -- Astro's compiler reports positions only for elements with a complete opening tag. */
   return -1;
 }

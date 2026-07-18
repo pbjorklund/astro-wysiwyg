@@ -27,6 +27,37 @@ test('marker encoding is URL and HTML attribute safe', () => {
   });
 });
 
+test('rejects malformed and invalid editor markers', () => {
+  assert.throws(() => decodeMarker('not+base64'), /malformed/);
+  assert.throws(() => decodeMarker(Buffer.from('{').toString('base64url')), /malformed/);
+
+  const valid = createMarker('page.md', 0, 4, 'text', 'markdown', 'p');
+  const invalid = [
+    null,
+    { ...valid, version: 2 },
+    { ...valid, file: 1 },
+    { ...valid, start: -1 },
+    { ...valid, start: 0.5 },
+    { ...valid, end: -1 },
+    { ...valid, end: 0.5 },
+    { ...valid, start: 5, end: 4 },
+    { ...valid, original: 1 },
+    { ...valid, format: 'html' },
+    { ...valid, tag: 1 },
+  ];
+  for (const marker of invalid) {
+    const token = Buffer.from(JSON.stringify(marker)).toString('base64url');
+    assert.throws(() => decodeMarker(token), /invalid/);
+  }
+});
+
+test('accepts every supported marker format', () => {
+  for (const format of ['astro', 'frontmatter', 'markdown'] as const) {
+    const marker = createMarker('page.md', 0, 0, '', format, 'p');
+    assert.equal(decodeMarker(encodeMarker(marker)).format, format);
+  }
+});
+
 test('saves rich HTML as Markdown while preserving surrounding source', async (t) => {
   const source = 'Before\n\nOld text\n\nAfter\n';
   const { root, file } = await fixture(source);
@@ -34,11 +65,13 @@ test('saves rich HTML as Markdown while preserving surrounding source', async (t
   const start = source.indexOf('Old text');
   const token = encodeMarker(createMarker('page.md', start, start + 8, 'Old text', 'markdown', 'p'));
 
+  let beforeWriteFile = '';
   const result = await applySourceEdit(root, {
     marker: token,
     html: 'New <strong>bold</strong> and <em>italic</em> text',
-  });
+  }, (target) => { beforeWriteFile = target; });
 
+  assert.equal(beforeWriteFile, file);
   assert.equal(await readFile(file, 'utf8'), 'Before\n\nNew **bold** and _italic_ text\n\nAfter\n');
   assert.equal(decodeMarker(result.marker).original, 'New **bold** and _italic_ text');
 });
@@ -136,6 +169,18 @@ test('updates a quoted frontmatter title as plain text', async (t) => {
   assert.equal(await readFile(file, 'utf8'), '---\ntitle: "New & better title"\n---\nBody\n');
 });
 
+test('derives plain frontmatter text from HTML when text is omitted', async (t) => {
+  const source = '---\ntitle: Old\n---\nBody\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const start = source.indexOf('Old');
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', start, start + 3, 'Old', 'frontmatter', 'h1')),
+    html: 'Safe value',
+  });
+  assert.match(await readFile(file, 'utf8'), /title: Safe value/);
+});
+
 test('preserves a Markdown list marker while editing an item', async (t) => {
   const source = '- Old **item**\n';
   const { root, file } = await fixture(source);
@@ -194,6 +239,189 @@ test('rejects paths outside the project root', async (t) => {
   await assert.rejects(
     applySourceEdit(root, { marker: token, html: 'unsafe' }),
     /outside the Astro project root/,
+  );
+});
+
+test('rejects unsupported, missing, stale, and ambiguous source targets', async (t) => {
+  const unsupported = await fixture('text', '.txt');
+  const missingRoot = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-'));
+  const ambiguous = await fixture('Same\n\nSame\n');
+  t.after(() => Promise.all([
+    rm(unsupported.root, { recursive: true, force: true }),
+    rm(missingRoot, { recursive: true, force: true }),
+    rm(ambiguous.root, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(
+    applySourceEdit(unsupported.root, {
+      marker: encodeMarker(createMarker('page.txt', 0, 4, 'text', 'markdown', 'p')),
+      html: 'changed',
+    }),
+    /file type cannot be edited/,
+  );
+  await assert.rejects(
+    applySourceEdit(missingRoot, {
+      marker: encodeMarker(createMarker('missing.md', 0, 4, 'text', 'markdown', 'p')),
+      html: 'changed',
+    }),
+    /no longer exists/,
+  );
+  await assert.rejects(
+    applySourceEdit(ambiguous.root, {
+      marker: encodeMarker(createMarker('page.md', 99, 103, 'Same', 'markdown', 'p')),
+      html: 'changed',
+    }),
+    /source changed/,
+  );
+});
+
+test('rejects unsupported block formats', async (t) => {
+  const { root } = await fixture('Text\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(
+    applySourceEdit(root, {
+      marker: encodeMarker(createMarker('page.md', 0, 4, 'Text', 'markdown', 'p')),
+      html: 'Text',
+      tag: 'script',
+    }),
+    /block format is not supported/,
+  );
+});
+
+test('serializes frontmatter quote styles and unsafe plain values', async (t) => {
+  const source = "---\ntitle: 'Old'\ndescription: Plain\n---\nBody\n";
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const titleStart = source.indexOf("'Old'");
+  const descriptionStart = source.indexOf('Plain');
+
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', titleStart, titleStart + 5, "'Old'", 'frontmatter', 'h1')),
+    html: "Author's title",
+    text: "Author's title",
+  });
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', descriptionStart, descriptionStart + 5, 'Plain', 'frontmatter', 'p')),
+    html: 'Needs: quotes',
+    text: 'Needs: quotes',
+  });
+
+  assert.match(await readFile(file, 'utf8'), /title: 'Author''s title'\ndescription: "Needs: quotes"/);
+});
+
+test('serializes multiline list items and default list markers', async (t) => {
+  const source = 'Old item\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', 0, 8, 'Old item', 'markdown', 'li')),
+    html: 'First<br>Second',
+    tag: 'li',
+  });
+  assert.equal(await readFile(file, 'utf8'), '- First  \n  Second\n');
+});
+
+test('handles alternate structural separators and inline Astro blocks', async (t) => {
+  const markdown = await fixture('First\r\n\r\nSecond\r\n');
+  const single = await fixture('Only');
+  const astro = await fixture('<div><p>First</p><p>Second</p></div>', '.astro');
+  t.after(() => Promise.all([
+    rm(markdown.root, { recursive: true, force: true }),
+    rm(single.root, { recursive: true, force: true }),
+    rm(astro.root, { recursive: true, force: true }),
+  ]));
+
+  await applySourceStructureEdit(markdown.root, {
+    marker: encodeMarker(createMarker('page.md', 9, 15, 'Second', 'markdown', 'p')),
+    operation: 'delete',
+  });
+  assert.equal(await readFile(markdown.file, 'utf8'), 'First\r\n');
+
+  await applySourceStructureEdit(single.root, {
+    marker: encodeMarker(createMarker('page.md', 0, 4, 'Only', 'markdown', 'p')),
+    operation: 'delete',
+  });
+  assert.equal(await readFile(single.file, 'utf8'), '');
+
+  const astroStart = '<div>'.length;
+  await applySourceStructureEdit(astro.root, {
+    marker: encodeMarker(createMarker('page.astro', astroStart, astroStart + 12, '<p>First</p>', 'astro', 'p')),
+    operation: 'delete',
+  });
+  assert.equal(await readFile(astro.file, 'utf8'), '<div><p>Second</p></div>');
+});
+
+test('inserts blocks with CRLF separators and after inline Astro elements', async (t) => {
+  const markdown = await fixture('First\r\n\r\nSecond\r\n');
+  const astro = await fixture('<div><p>First</p><p>Second</p></div>', '.astro');
+  t.after(() => Promise.all([
+    rm(markdown.root, { recursive: true, force: true }),
+    rm(astro.root, { recursive: true, force: true }),
+  ]));
+  await applySourceStructureEdit(markdown.root, {
+    marker: encodeMarker(createMarker('page.md', 0, 5, 'First', 'markdown', 'p')),
+    operation: 'insert-after',
+  });
+  assert.equal(await readFile(markdown.file, 'utf8'), 'First\r\n\r\nNew paragraph\r\n\r\nSecond\r\n');
+
+  const start = '<div>'.length;
+  await applySourceStructureEdit(astro.root, {
+    marker: encodeMarker(createMarker('page.astro', start, start + 12, '<p>First</p>', 'astro', 'p')),
+    operation: 'insert-after',
+  });
+  assert.equal(
+    await readFile(astro.file, 'utf8'),
+    '<div><p>First</p>\n<p>New paragraph</p><p>Second</p></div>',
+  );
+});
+
+test('deletes an indented final Astro line without a trailing newline', async (t) => {
+  const source = '<div>\n  <p>Last</p>';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const start = source.indexOf('<p>Last</p>');
+  await applySourceStructureEdit(root, {
+    marker: encodeMarker(createMarker('page.astro', start, start + 11, '<p>Last</p>', 'astro', 'p')),
+    operation: 'delete',
+  });
+  assert.equal(await readFile(file, 'utf8'), '<div>\n');
+});
+
+test('changes an Astro block tag around quoted and expression attributes', async (t) => {
+  const source = '<p title=">" data-value={{ text: ">" }}>Old</p>\n';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = source.trimEnd();
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.astro', 0, original.length, original, 'astro', 'p')),
+    html: 'New',
+    tag: 'h2',
+  });
+  assert.equal(await readFile(file, 'utf8'), '<h2 title=">" data-value={{ text: ">" }}>New</h2>\n');
+});
+
+test('rejects malformed Astro source blocks', async (t) => {
+  const { root } = await fixture('<p>missing close\n', '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(
+    applySourceEdit(root, {
+      marker: encodeMarker(createMarker('page.astro', 0, 16, '<p>missing close', 'astro', 'p')),
+      html: 'New',
+    }),
+    /no longer editable/,
+  );
+});
+
+test('rejects Astro opening tags with unterminated attributes', async (t) => {
+  const original = '<p title="unterminated>Text</p>';
+  const { root } = await fixture(`${original}\n`, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(
+    applySourceEdit(root, {
+      marker: encodeMarker(createMarker('page.astro', 0, original.length, original, 'astro', 'p')),
+      html: 'New',
+    }),
+    /no longer editable/,
   );
 });
 
