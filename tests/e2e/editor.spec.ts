@@ -7,6 +7,7 @@ const cardFile = '.tmp/e2e-site/src/content/articles/example/index.md';
 const linkFile = '.tmp/e2e-site/src/pages/links.md';
 const listFile = '.tmp/e2e-site/src/pages/lists.md';
 const headingFile = '.tmp/e2e-site/src/pages/headings.md';
+const queueFile = '.tmp/e2e-site/src/pages/queue.md';
 
 test('edits an Astro block with keyboard formatting and saves to disk', async ({ page }) => {
   await page.goto('/');
@@ -96,7 +97,7 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
     if (saveRequests === 1) await new Promise((resolve) => setTimeout(resolve, 1_000));
     await route.continue();
   });
-  await page.goto('/article');
+  await page.goto('/queue');
   const paragraph = page.locator('main > p');
   await expect(paragraph).toHaveAttribute('data-astro-wysiwyg', /.+/);
   await paragraph.click();
@@ -116,12 +117,12 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
   });
   await paragraph.press('Control+b');
 
-  await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('Markdown **saved**');
+  await expect.poll(async () => readFile(queueFile, 'utf8')).toContain('Markdown **saved**');
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
 });
 
 test('keeps editing active when Done cannot save', async ({ page }) => {
-  await page.goto('/article');
+  await page.goto('/save-failure');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   await page.route('**/_astro-wysiwyg/save', async (route) => {
