@@ -2,6 +2,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from '@astrojs/compiler';
 import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
+import { isInsideProjectRoot } from './project-path.ts';
 
 const BLOCK_TAGS = new Set([
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'figcaption', 'dt', 'dd', 'td', 'th',
@@ -44,11 +45,11 @@ export async function resolveAstroSourceMarker(
 ): Promise<string> {
   const rootPath = await realpath(root);
   const candidate = path.isAbsolute(sourceFile) ? path.resolve(sourceFile) : path.resolve(rootPath, sourceFile);
-  if (candidate !== rootPath && !candidate.startsWith(`${rootPath}${path.sep}`)) {
+  if (!isInsideProjectRoot(rootPath, candidate)) {
     throw new Error('The requested file is outside the Astro project root.');
   }
   const file = await realpath(candidate);
-  if (file !== rootPath && !file.startsWith(`${rootPath}${path.sep}`)) {
+  if (!isInsideProjectRoot(rootPath, file)) {
     throw new Error('The requested file is outside the Astro project root.');
   }
   if (path.extname(file).toLowerCase() !== '.astro') {
@@ -144,11 +145,11 @@ async function resolveFrontmatterMarker(
     throw new Error('The current content file could not be identified.');
   }
   const candidate = path.resolve(root, context.file);
-  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+  if (!isInsideProjectRoot(root, candidate)) {
     throw new Error('The requested file is outside the Astro project root.');
   }
   const file = await realpath(candidate);
-  if (file !== root && !file.startsWith(`${root}${path.sep}`)) {
+  if (!isInsideProjectRoot(root, file)) {
     throw new Error('The requested file is outside the Astro project root.');
   }
   if (!['.md', '.mdx', '.mdoc'].includes(path.extname(file).toLowerCase())) {
