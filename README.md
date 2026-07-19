@@ -1,18 +1,38 @@
 # Astro WYSIWYG
 
-`WYSIWYG` stands for "what you see is what you get": edit content where it appears on the page instead of switching to a source file. This integration writes changes back to `.astro`, `.md`, or `.mdx` files during development, while production builds remain unchanged.
+Edit Astro pages in the browser and save changes directly to `.astro`, `.md`, and `.mdx` files. `WYSIWYG` means "what you see is what you get": click rendered content, change it in place, and keep working without switching to a source editor.
 
-During `astro dev`, the integration maps rendered elements to their source ranges, loads an in-browser editor, and sends validated changes to a local endpoint that updates those ranges.
+[![Watch Astro WYSIWYG edit rendered content and save it to Markdown](https://raw.githubusercontent.com/pbjorklund/astro-wysiwyg/main/.github/assets/astro-wysiwyg-demo.gif)](https://github.com/pbjorklund/astro-wysiwyg/blob/main/.github/assets/astro-wysiwyg-demo.mp4)
 
-[![Watch Astro WYSIWYG edit rendered content and save it to Markdown](.github/assets/astro-wysiwyg-demo.gif)](.github/assets/astro-wysiwyg-demo.mp4)
+## Quick start
 
-## Install
+Add the integration to an existing Astro project:
+
+```sh
+npx astro add astro-wysiwyg
+```
+
+Start the development server:
+
+```sh
+npm run dev
+```
+
+1. Open your local Astro site.
+2. Click any outlined text to start editing.
+3. Change the content and formatting in place. Changes save to the source file automatically.
+
+Open **Page editor** in Astro's development toolbar to turn editing, autosave, or editable outlines on and off, and to edit supported frontmatter fields.
+
+## Manual setup
+
+Install the package:
 
 ```sh
 npm install --save-dev astro-wysiwyg
 ```
 
-Add the integration to `astro.config.mjs`:
+Add it to `astro.config.mjs`:
 
 ```js
 import { defineConfig } from 'astro/config';
@@ -23,15 +43,7 @@ export default defineConfig({
 });
 ```
 
-## Use
-
-Start Astro in development mode, then click supported page text to edit it. The editor provides inline formatting, links, lists, headings, block controls, undo, and save actions.
-
-Open **Page editor** in Astro's development toolbar to enable or disable editing, autosave, editable outlines, and Markdown frontmatter editing.
-
-Changes save after 500 ms by default. Explicit Save and Done actions remain available when autosave is disabled.
-
-## Options
+## Configuration
 
 ```js
 wysiwyg({
@@ -40,21 +52,33 @@ wysiwyg({
 });
 ```
 
-- `saveDelay`: delay before autosaving, in milliseconds. Default: `500`.
-- `endpoint`: local development endpoint for source writes. Default: `/_astro-wysiwyg/save`.
+| Option | Default | Description |
+| --- | --- | --- |
+| `saveDelay` | `500` | Delay before autosaving, in milliseconds. |
+| `endpoint` | `/_astro-wysiwyg/save` | Local development endpoint used to save edits. |
 
 ## Supported content
 
-The editor supports static paragraphs, headings, list items, common text-bearing Astro elements, and standard inline Markdown formatting. It can also add, delete, or change supported blocks.
+Astro WYSIWYG supports static paragraphs, headings, lists, common text elements, inline Markdown formatting, links, and supported frontmatter values. You can also add, delete, or change supported blocks.
 
-Dynamic Astro expressions, MDX components, and Markdown constructs that cannot be written back safely are left unchanged.
+Expressions, components, and Markdown constructs that cannot be mapped safely to one source value remain read-only.
+
+## Requirements
+
+- Astro 5 or 6
+- Node.js 18.17.1 or newer
+- A current desktop version of Chromium, Firefox, or Safari
 
 ## Safety
 
-Source writes run only under `astro dev`. The endpoint accepts same-origin requests from loopback clients and confines writes to supported source files inside the configured `src` directory.
+The editor runs under `astro dev` and is not added to production builds. Source writes are limited to supported files inside `src` and requests from the local site.
 
-Do not expose the development editor through a LAN host, reverse proxy, or tunnel.
+Keep the development server local. Do not expose the editor through a public tunnel, LAN host, or reverse proxy.
 
-## Browser support
+## Support
 
-The editor supports current desktop Chromium, Firefox, and Safari.
+Found a bug or have a feature request? [Open an issue](https://github.com/pbjorklund/astro-wysiwyg/issues).
+
+---
+
+Supported by [AmpliFlow](https://www.ampliflow.com/).
