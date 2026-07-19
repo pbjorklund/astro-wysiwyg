@@ -2,6 +2,8 @@
 
 Edit rendered Astro content in place during development. Changes are written back to `.astro`, `.md`, or `.mdx` source files, while production builds remain unchanged.
 
+During `astro dev`, the integration maps rendered elements to their source ranges, loads an in-browser editor, and sends validated changes to a local endpoint that updates those ranges.
+
 ## Install
 
 ```sh
