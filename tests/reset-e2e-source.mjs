@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const fixtureRoot = path.resolve('tests/fixtures/basic/src');
@@ -32,12 +31,6 @@ async function resetFile(relative) {
   if (current?.equals(expected)) return false;
 
   await mkdir(path.dirname(runtimeFile), { recursive: true });
-  const temporaryFile = `${runtimeFile}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryFile, expected);
-    await rename(temporaryFile, runtimeFile);
-  } finally {
-    await rm(temporaryFile, { force: true });
-  }
+  await writeFile(runtimeFile, expected);
   return true;
 }

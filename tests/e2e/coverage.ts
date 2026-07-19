@@ -101,7 +101,8 @@ export const test = base.extend<{ coverageCollector: void; sourceFixtureReset: v
 
 async function resetSourceAndSettle(): Promise<void> {
   if (!await resetE2eSource()) return;
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  // Keep fixture-triggered Astro reloads out of the next test's browser session.
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
 }
 
 export { expect };

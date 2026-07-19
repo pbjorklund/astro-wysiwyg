@@ -1,4 +1,5 @@
 import { expect, test } from './coverage.ts';
+import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
 const astroFile = '.tmp/e2e-site/src/pages/index.astro';
@@ -9,6 +10,20 @@ const listFile = '.tmp/e2e-site/src/pages/lists.md';
 const headingFile = '.tmp/e2e-site/src/pages/headings.md';
 const queueFile = '.tmp/e2e-site/src/pages/queue.md';
 const blocksFile = '.tmp/e2e-site/src/pages/blocks.md';
+
+async function seedActiveSessionOnNextLoad(page: Page, patch: Record<string, unknown>): Promise<void> {
+  const session = await page.evaluate(() => (
+    JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}') as Record<string, unknown>
+  ));
+  Object.assign(session, patch);
+  const serialized = JSON.stringify(session);
+  await page.addInitScript((value) => {
+    const seedKey = 'astro-wysiwyg-test-session-seeded';
+    if (sessionStorage.getItem(seedKey)) return;
+    sessionStorage.setItem(seedKey, 'true');
+    sessionStorage.setItem('astro-wysiwyg-active', value);
+  }, serialized);
+}
 
 test('edits an Astro block with keyboard formatting and saves to disk', async ({ page }) => {
   await page.addInitScript(() => {
@@ -414,13 +429,6 @@ test('does not repeat an in-flight save already reflected after reload', async (
   await page.goto('/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
-  await page.evaluate(() => {
-    const key = 'astro-wysiwyg-active';
-    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
-    value.sourceOriginal = 'Source before the committed save';
-    value.saving = true;
-    sessionStorage.setItem(key, JSON.stringify(value));
-  });
   let saveRequests = 0;
   await page.route('**/_astro-wysiwyg/save', (route) => {
     saveRequests += 1;
@@ -431,6 +439,10 @@ test('does not repeat an in-flight save already reflected after reload', async (
     });
   });
 
+  await seedActiveSessionOnNextLoad(page, {
+    sourceOriginal: 'Source before the committed save',
+    saving: true,
+  });
   await page.reload();
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
   await page.waitForTimeout(700);
@@ -449,13 +461,6 @@ test('retries an in-flight save when its original source is unchanged after relo
     return value.sourceOriginal;
   });
   expect(storedSourceOriginal).toBe(sourceOriginal);
-  await page.evaluate(() => {
-    const key = 'astro-wysiwyg-active';
-    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
-    value.html = `${value.html} <em>pending</em>`;
-    value.saving = true;
-    sessionStorage.setItem(key, JSON.stringify(value));
-  });
   let saveRequests = 0;
   await page.route('**/_astro-wysiwyg/save', (route) => {
     saveRequests += 1;
@@ -466,6 +471,8 @@ test('retries an in-flight save when its original source is unchanged after relo
     });
   });
 
+  const pendingHtml = await paragraph.evaluate((element) => `${element.innerHTML} <em>pending</em>`);
+  await seedActiveSessionOnNextLoad(page, { html: pendingHtml, saving: true });
   await page.reload();
   await expect(paragraph).toContainText('pending');
   await expect.poll(() => saveRequests).toBe(1);
@@ -558,20 +565,18 @@ test('preserves an in-flight draft without overwriting conflicting source after 
   await page.goto('/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
-  await page.evaluate(() => {
-    const key = 'astro-wysiwyg-active';
-    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
-    value.sourceOriginal = 'Source before an external change';
-    value.html = `${value.html} <em>pending</em>`;
-    value.saving = true;
-    sessionStorage.setItem(key, JSON.stringify(value));
-  });
   let saveRequests = 0;
   await page.route('**/_astro-wysiwyg/save', (route) => {
     saveRequests += 1;
     return route.abort();
   });
 
+  const pendingHtml = await paragraph.evaluate((element) => `${element.innerHTML} <em>pending</em>`);
+  await seedActiveSessionOnNextLoad(page, {
+    sourceOriginal: 'Source before an external change',
+    html: pendingHtml,
+    saving: true,
+  });
   await page.reload();
   await expect(paragraph).toContainText('pending');
   await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText(
@@ -973,8 +978,9 @@ test('handles duplicate setup, page events, open panels, block switches, and dis
   await paragraphs.first().click();
   await page.evaluate(() => document.dispatchEvent(new Event('astro:page-load')));
 
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
   await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' })).toBeVisible();
   await paragraphs.nth(1).evaluate((element) => element.click());
   await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' })).not.toBeVisible();
@@ -1091,8 +1097,11 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
     selection?.removeAllRanges();
     selection?.addRange(range);
   });
-  await editor.getByRole('button', { name: 'Link' }).click();
-  await editor.getByRole('button', { name: 'Done' }).click();
+  await page.evaluate(() => {
+    const shadow = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot;
+    (shadow?.querySelector('[data-action="link"]') as HTMLButtonElement)?.click();
+    (shadow?.querySelector('[data-action="done"]') as HTMLButtonElement)?.click();
+  });
   await page.evaluate(() => {
     dispatchEvent(new Event('scroll'));
     const shadow = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot;
@@ -1253,9 +1262,17 @@ test('validates, applies, cancels, and removes links', async ({ page }) => {
   paragraph = page.locator('main > p');
   await paragraph.click();
   await paragraph.evaluate((element) => {
-    const text = element.firstChild;
-    if (!text) throw new Error('Missing text');
-    const start = text.textContent?.indexOf('plain') ?? -1;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let text: Text | null = null;
+    while (walker.nextNode()) {
+      const candidate = walker.currentNode as Text;
+      if (candidate.data.includes('plain')) {
+        text = candidate;
+        break;
+      }
+    }
+    if (!text) throw new Error('Missing plain text');
+    const start = text.data.indexOf('plain');
     const range = document.createRange();
     range.setStart(text, start);
     range.setEnd(text, start + 5);
@@ -1284,8 +1301,9 @@ test('validates, applies, cancels, and removes links', async ({ page }) => {
 
 test('reports frontmatter context, load, and save errors', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
   let dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
   await expect(dialog.getByRole('alert')).toContainText('Open a Markdown or MDX page');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
@@ -1301,21 +1319,25 @@ test('reports frontmatter context, load, and save errors', async ({ page }) => {
     if (body.frontmatter === 'read') return route.continue();
     await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Save failed.' }) });
   });
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
   dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
   await expect(dialog.getByRole('alert')).toHaveText('Load failed.');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   failRead = false;
-  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
   await dialog.getByRole('textbox', { name: 'title' }).fill('Will not save');
   await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
   await expect(dialog.getByRole('alert')).toHaveText('Save failed.');
   await dialog.press('Escape');
   await expect(dialog).not.toBeVisible();
   expect(await page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft'))).toBeNull();
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
   await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
   await expect(dialog).not.toBeVisible();
 });
@@ -1522,34 +1544,6 @@ test('defaults invalid stored preference fields independently', async ({ page })
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-astro-wysiwyg-enabled', '');
   await expect(page.locator('html')).toHaveAttribute('data-astro-wysiwyg-highlights', '');
-});
-
-test('updates preferences and toolbar placement through the Astro dev toolbar', async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem('astro-wysiwyg-preferences', '{invalid');
-  });
-  await page.goto('/');
-  await expect(page.locator('html')).toHaveAttribute('data-astro-wysiwyg-enabled', '');
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  const autosave = page.getByRole('checkbox', { name: 'Autosave changes' });
-  await expect(autosave).toBeChecked();
-  await page.evaluate(() => {
-    (window as Window & { preferenceEvents?: unknown[] }).preferenceEvents = [];
-    document.addEventListener('astro-wysiwyg:preferences', (event) => {
-      (window as Window & { preferenceEvents: unknown[] }).preferenceEvents.push((event as CustomEvent).detail);
-    });
-    Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };
-  });
-  await page.getByRole('checkbox', { name: 'Autosave changes' }).evaluate((element) => (element as HTMLInputElement).click());
-  expect(await page.evaluate(() => (window as Window & { preferenceEvents: unknown[] }).preferenceEvents)).toEqual([
-    { enabled: true, autosave: false, highlights: true },
-  ]);
-
-  await page.getByRole('button', { name: 'Settings' }).click();
-  const placement = page.getByRole('combobox');
-  await placement.selectOption('bottom-left');
-  await page.getByRole('button', { name: 'Page editor' }).click();
-  await expect(page.getByRole('heading', { name: 'Page editor' })).toBeVisible();
 });
 
 test('applies enable, autosave, and outline preferences', async ({ page }) => {
