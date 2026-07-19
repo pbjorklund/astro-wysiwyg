@@ -4,6 +4,12 @@ Edit rendered Astro content in place during development. The page keeps its norm
 
 The integration adds no editor markup or client code to production builds.
 
+## Walkthrough
+
+[![Edit Astro content on the page](artwork/demo/astro-wysiwyg-demo.gif)](artwork/demo/astro-wysiwyg-demo.mp4)
+
+The walkthrough uses a local synthetic Astro site and the real save endpoint. It clicks rendered Markdown, rewrites a phrase, applies bold formatting, saves, reloads, and checks the updated source file. Run `npm run demo:record` to regenerate the MP4 and GIF; the command uses no model provider or external service.
+
 ## Install
 
 ```sh
@@ -49,7 +55,7 @@ Start Astro with `npm run dev`, then click an editable text block.
 
 The editor adds one roving Tab stop for source-backed blocks, even on long pages. Use `Alt+ArrowUp` or `Alt+ArrowDown` to move that stop; Tab then leaves the editable block region. Author-provided tab order remains unchanged.
 
-The floating toolbar has Undo, Bold, Italic, Link, Bullet list, Numbered list, Add block below, Delete block, H1-H6, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. Changes save after 500 ms by default. If Astro reloads a content-collection page after the write, the same block and caret return to edit mode automatically. Unsaved drafts are compared with the source snapshot they started from; if the source changed, the draft stays active but automatic saving pauses for review.
+The floating toolbar has Undo, Bold, Italic, Link, Bullet list, Numbered list, Add block below, Delete block, H1-H6, Paragraph, Save, and Done buttons. Select text before adding a link, or place the caret inside an existing link to edit or remove it. List controls convert the current block and can switch an existing list between bullet and numbered forms. Changes save after 500 ms by default. Inline and structural saves do not trigger Astro HMR page reloads, so surrounding form controls keep their current state. If Astro reloads after an external source change, the same block and caret return to edit mode automatically. Unsaved drafts are compared with the source snapshot they started from; if the source changed, the draft stays active but automatic saving pauses for review.
 
 ## Dev toolbar controls
 

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "canvas": { "width": 1600, "height": 900, "fps": 30 },
+  "targetDurationSeconds": { "minimum": 22, "maximum": 30 },
+  "startingState": "The launch-notes page shows the plain phrase 'rough product updates'.",
+  "userAction": "The author clicks the paragraph, rewrites the phrase, selects it, applies Bold, and saves.",
+  "systemWork": "astro-wysiwyg sends the real source edit and Astro reloads the updated Markdown page.",
+  "visibleResult": "The reloaded page shows bold 'launch-ready product updates'.",
+  "chapters": [
+    { "id": "intro", "start": 0, "end": 1.8, "title": "Edit Astro content on the page" },
+    { "id": "edit", "start": 1.8, "end": 10.5, "title": "Rewrite in context" },
+    { "id": "format", "start": 10.5, "end": 15.5, "title": "Format with the editor" },
+    { "id": "save", "start": 15.5, "end": 20.5, "title": "Save to Markdown" },
+    { "id": "proof", "start": 20.5, "end": 26.0, "title": "Verify after reload" }
+  ],
+  "events": [
+    { "id": "step-edit", "type": "callout", "start": 2.0, "end": 5.0, "text": "1  Click page text", "x": 1120, "y": 104 },
+    { "id": "step-rewrite", "type": "callout", "start": 5.0, "end": 10.5, "text": "2  Rewrite in place", "x": 1120, "y": 104 },
+    { "id": "step-format", "type": "callout", "start": 10.5, "end": 15.5, "text": "3  Select and format", "x": 1120, "y": 104 },
+    { "id": "step-save", "type": "callout", "start": 15.5, "end": 20.5, "text": "4  Save to Markdown", "x": 1120, "y": 104 },
+    { "id": "final-proof", "type": "callout", "start": 20.5, "end": 26.0, "text": "Saved and verified after reload", "x": 992, "y": 104 }
+  ],
+  "cuts": [],
+  "zooms": [],
+  "finalProofHoldSeconds": 5.5
+}

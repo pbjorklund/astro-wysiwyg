@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "createdAt": "2026-07-19T15:18:50.811Z",
+  "evidence": "live automated flow",
+  "story": "Click rendered Astro text, rewrite and format it, save to Markdown, then verify it after reload.",
+  "safety": {
+    "fixture": "synthetic and publishable",
+    "workspace": "temporary",
+    "sourcePathGate": "active",
+    "host": "127.0.0.1",
+    "credentials": "none"
+  },
+  "truthBoundary": {
+    "real": [
+      "Astro site",
+      "click-to-edit",
+      "text selection",
+      "typing",
+      "Bold action",
+      "save endpoint",
+      "Markdown mutation",
+      "reload",
+      "browser assertion",
+      "file assertion"
+    ],
+    "presentationOnly": [
+      "intro card",
+      "step labels",
+      "callouts",
+      "synthetic-data badge",
+      "DOM cursor",
+      "click ring"
+    ]
+  },
+  "outcome": {
+    "browser": "pass: reloaded page contains bold launch-ready product updates",
+    "source": "pass: temporary src/pages/index.md contains the expected Markdown",
+    "endpointStatus": 200
+  },
+  "video": {
+    "path": "artwork/demo/astro-wysiwyg-demo.mp4",
+    "durationSeconds": 26.333,
+    "width": 1600,
+    "height": 900,
+    "codec": "h264",
+    "pixelFormat": "yuv420p",
+    "frameRate": "30/1",
+    "bytes": 1032815
+  },
+  "preview": {
+    "path": "artwork/demo/astro-wysiwyg-demo.gif",
+    "durationSeconds": 26.3,
+    "width": 800,
+    "height": 450,
+    "codec": "gif",
+    "pixelFormat": "bgra",
+    "frameRate": "10/1",
+    "bytes": 1850085
+  },
+  "hashes": {
+    "contract": "f7c2726f49d54a98f9d072398ebc9015a5480be078ca9c261189a0b70b371731",
+    "storyboard": "85d7d7c210ac52f67f5336e53fcbe80a9ed028550e359272ccdff8bc33b03622",
+    "capture": "f82afd89fb514858897ff3470d38469cbd39ec9d0f1e02a6f136bab6759aeb42",
+    "video": "1965d6ec771f1eebe31c020b9ac2ce92af59a6713fe8ded4ed5bca8ceaf42511",
+    "preview": "b698b828579185acaf844b3123fdd2d204d625d0c6079bc4d6fc0f017b4bf5a9"
+  },
+  "eval": {
+    "caseId": "astro-wysiwyg-source-backed-edit",
+    "calibration": "pass: known-good accepted and known-bad rejected",
+    "deterministicChecks": [
+      "canvas",
+      "codec",
+      "pixelFormat",
+      "fastStart",
+      "gif",
+      "host",
+      "temporaryWorkspace",
+      "sourcePathGate",
+      "browserOutcomeCheck",
+      "fileOutcomeCheck",
+      "modelUse"
+    ],
+    "expectedSource": "Our studio turns **launch-ready product updates** into a clear story people can trust.",
+    "result": "pass"
+  },
+  "modelUse": "none",
+  "review": {
+    "status": "approved by manual frame audit",
+    "method": "Full contact sheet, eight chronological 1600x900 frames, and the final frame at 800x450.",
+    "independentReviewer": {
+      "status": "unavailable",
+      "attempts": 4,
+      "infrastructureError": "frontmatter.tools?.split is not a function"
+    },
+    "scores": {
+      "storyClarity": 9,
+      "textReadability": 9,
+      "editorialFocus": 9,
+      "pacing": 9,
+      "persistenceProof": 10,
+      "privacy": 10,
+      "truthfulness": 10,
+      "viewerOrientation": 10,
+      "seriesConsistency": 9
+    },
+    "criticalFailures": [],
+    "rerenderCount": 1,
+    "fixes": [
+      "Style restored <b> content like <strong>.",
+      "Increase final Markdown proof text for the 800x450 preview."
+    ],
+    "decision": "approve"
+  }
+}

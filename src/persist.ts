@@ -5,7 +5,7 @@ import TurndownService from 'turndown';
 import { EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
 import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
 import { isInsideProjectRoot } from './project-path.ts';
-import { mutateTextFile } from './source-file.ts';
+import { mutateTextFile, type BeforeTextFileWrite } from './source-file.ts';
 
 const EDITABLE_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const EDITABLE_EXTENSIONS = new Set(['.astro', '.md', '.mdx']);
@@ -62,7 +62,7 @@ export class SourceEditError extends Error {
 export async function applySourceEdit(
   root: string,
   edit: SourceEdit,
-  onBeforeWrite?: (file: string) => void | Promise<void>,
+  onBeforeWrite?: BeforeTextFileWrite,
   writableRoot = root,
 ): Promise<SourceEditResult> {
   const { marker, filePath } = await resolveSourceTarget(root, edit.marker, writableRoot);
@@ -77,7 +77,6 @@ export async function applySourceEdit(
         ? serializeFrontmatter(edit.text ?? htmlToMarkdown(safeHtml), marker.original)
         : serializeMarkdownEdit(marker.file, safeHtml, tag, marker.original);
     const updated = source.slice(0, start) + replacement + source.slice(start + marker.original.length);
-    await onBeforeWrite?.(filePath);
 
     return {
       source: updated,
@@ -93,13 +92,14 @@ export async function applySourceEdit(
         file: filePath,
       },
     };
-  });
+  }, onBeforeWrite);
 }
 
 export async function applySourceStructureEdit(
   root: string,
   edit: SourceStructureEdit,
   writableRoot = root,
+  onBeforeWrite?: BeforeTextFileWrite,
 ): Promise<SourceStructureEditResult> {
   const { marker, filePath } = await resolveSourceTarget(root, edit.marker, writableRoot);
 
@@ -140,7 +140,7 @@ export async function applySourceStructureEdit(
       source: source.slice(0, deletionStart) + source.slice(deletionEnd),
       result: { file: filePath },
     };
-  });
+  }, onBeforeWrite);
 }
 
 async function resolveSourceTarget(root: string, token: string, writableRoot: string): Promise<SourceTarget> {

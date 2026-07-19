@@ -32,6 +32,7 @@ async function saveMiddleware(
   options: Parameters<typeof wysiwyg>[0] = {},
   loggedErrors: unknown[] = [],
   sourceRoot = root,
+  configuredValues: unknown[] = [],
 ): Promise<Middleware> {
   const integration = wysiwyg(options);
   await integration.hooks['astro:config:setup']?.({
@@ -41,7 +42,10 @@ async function saveMiddleware(
       srcDir: pathToFileURL(`${sourceRoot}${path.sep}`),
       markdown: {},
     },
-    updateConfig: (value: unknown) => value,
+    updateConfig: (value: unknown) => {
+      configuredValues.push(value);
+      return value;
+    },
     injectScript: () => undefined,
     addDevToolbarApp: () => undefined,
   } as never);
@@ -131,6 +135,62 @@ test('save endpoint persists a same-origin JSON edit', async (t) => {
   assert.equal(response.statusCode, 200);
   assert.match(response.headers['Content-Type'], /application\/json/);
   assert.equal(await readFile(file, 'utf8'), 'New text\n');
+});
+
+test('suppresses matching editor hot updates without hiding external changes', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  const file = path.join(root, 'page.md');
+  await writeFile(file, 'Old text\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configuredValues: unknown[] = [];
+  const middleware = await saveMiddleware(root, {}, [], root, configuredValues);
+  const firstMarker = encodeMarker(createMarker('page.md', 0, 8, 'Old text', 'markdown', 'p'));
+  const first = await send(middleware, JSON.stringify({ marker: firstMarker, html: 'Editor text' }));
+  assert.equal(first.statusCode, 200);
+
+  const configured = configuredValues[0] as {
+    vite: { plugins: Array<{
+      handleHotUpdate(context: { file: string; read(): Promise<string> }): Promise<unknown>;
+    }> };
+  };
+  const filter = configured.vite.plugins.find(({ handleHotUpdate }) => Boolean(handleHotUpdate));
+  assert.ok(filter);
+  const secondMarker = (JSON.parse(first.body) as { marker: string }).marker;
+  const second = await send(middleware, JSON.stringify({ marker: secondMarker, html: 'Newer editor text' }));
+  assert.equal(second.statusCode, 200);
+  assert.deepEqual(await filter.handleHotUpdate({
+    file,
+    read: async () => 'Editor text\n',
+  }), []);
+  assert.deepEqual(await filter.handleHotUpdate({
+    file,
+    read: () => readFile(file, 'utf8'),
+  }), []);
+  assert.equal(await filter.handleHotUpdate({
+    file,
+    read: () => readFile(file, 'utf8'),
+  }), undefined);
+
+  const thirdMarker = (JSON.parse(second.body) as { marker: string }).marker;
+  const third = await send(middleware, JSON.stringify({ marker: thirdMarker, html: 'Third editor text' }));
+  assert.equal(third.statusCode, 200);
+  assert.equal(await filter.handleHotUpdate({
+    file,
+    read: async () => { throw new Error('Simulated read failure.'); },
+  }), undefined);
+
+  const fourthMarker = (JSON.parse(third.body) as { marker: string }).marker;
+  const fourth = await send(middleware, JSON.stringify({ marker: fourthMarker, html: 'Fourth editor text' }));
+  assert.equal(fourth.statusCode, 200);
+  await writeFile(file, 'External text\n');
+  assert.equal(await filter.handleHotUpdate({
+    file,
+    read: () => readFile(file, 'utf8'),
+  }), undefined);
+  assert.equal(await filter.handleHotUpdate({
+    file: path.join(root, 'missing.md'),
+    read: async () => '',
+  }), undefined);
 });
 
 test('save endpoint writes only inside the configured source directory', async (t) => {
@@ -281,7 +341,15 @@ test('reuses a configured unified Markdown processor', async () => {
   } as never);
 
   assert.equal(rehypePlugins.length, 1);
-  assert.deepEqual(update, { markdown: { processor } });
+  const configured = update as {
+    markdown: { processor: unknown };
+    vite: { plugins: Array<{ name: string; enforce?: string }> };
+  };
+  assert.equal(configured.markdown.processor, processor);
+  assert.deepEqual(
+    configured.vite.plugins.map(({ name, enforce }) => ({ name, enforce })),
+    [{ name: 'astro-wysiwyg:quiet-editor-writes', enforce: 'pre' }],
+  );
 });
 
 test('falls back when a configured Markdown processor cannot accept rehype plugins', async () => {

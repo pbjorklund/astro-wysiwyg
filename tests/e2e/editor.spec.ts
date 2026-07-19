@@ -11,6 +11,9 @@ const queueFile = '.tmp/e2e-site/src/pages/queue.md';
 const blocksFile = '.tmp/e2e-site/src/pages/blocks.md';
 
 test('edits an Astro block with keyboard formatting and saves to disk', async ({ page }) => {
+  await page.addInitScript(() => {
+    sessionStorage.setItem('wysiwyg-loads', String(Number(sessionStorage.getItem('wysiwyg-loads') ?? 0) + 1));
+  });
   await page.goto('/');
   const paragraph = page.locator('p.lead');
   await expect(paragraph).toHaveAttribute('data-wysiwyg-source-loc', /.+/);
@@ -48,6 +51,8 @@ test('edits an Astro block with keyboard formatting and saves to disk', async ({
     '<h1 class="lead"><b>Saved from the browser</b></h1>',
   );
   await expect(page.locator('h1.lead')).toContainText('Saved from the browser');
+  await page.waitForTimeout(1_000);
+  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('1');
 });
 
 test('edits a rendered frontmatter title without leaving edit mode', async ({ page }) => {
@@ -67,11 +72,11 @@ test('edits a rendered frontmatter title without leaving edit mode', async ({ pa
   await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Markdown fixture updated');
   await page.waitForTimeout(2_000);
   await expect(title).toHaveAttribute('contenteditable', 'true');
-  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('2');
+  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('1');
 
   await page.reload();
   await expect(title).toHaveAttribute('contenteditable', 'true');
-  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('3');
+  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('2');
   await editor.getByRole('button', { name: 'Add block below' }).evaluate((button) => {
     (button as HTMLButtonElement).disabled = false;
     (button as HTMLButtonElement).click();

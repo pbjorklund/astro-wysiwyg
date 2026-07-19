@@ -1,0 +1,53 @@
+{
+  "id": "astro-wysiwyg-source-backed-edit",
+  "audience": "Astro content author",
+  "why": {
+    "problem": "A small copy correction requires finding the right Markdown file and source range, which interrupts page review.",
+    "viewerOutcome": "The viewer can trust that an edit made on the rendered page is written back to Markdown.",
+    "promise": "Edit rendered Astro content, format it, save it, and verify the source-backed result after reload.",
+    "falsifier": "The real save endpoint does not succeed, reload loses the text or formatting, or the Markdown source differs from the visible result."
+  },
+  "arrange": {
+    "situation": "A synthetic launch-notes page describes rough product updates.",
+    "fixtures": [
+      "Local Astro site",
+      "Synthetic launch copy",
+      "Temporary writable Markdown source"
+    ],
+    "startAssertion": "The page and Markdown source both contain the phrase 'rough product updates'."
+  },
+  "act": {
+    "workflow": [
+      "Click the rendered paragraph",
+      "Replace the rough-draft phrase",
+      "Select and bold the new phrase",
+      "Save through the astro-wysiwyg endpoint"
+    ],
+    "actionAssertion": "The real source-edit request returns a successful response."
+  },
+  "assert": {
+    "productResult": "The reloaded page shows 'launch-ready product updates' in bold.",
+    "userMeaning": "The author can correct source-backed copy without leaving page context.",
+    "persistenceAssertion": "After reload, the visible result remains and the temporary Markdown file contains '**launch-ready product updates**'."
+  },
+  "visibleDifference": "The plain phrase 'rough product updates' becomes the bold phrase 'launch-ready product updates'.",
+  "scope": {
+    "included": ["Rendered text editing", "Inline bold formatting", "Explicit save", "Reload proof", "Markdown file assertion"],
+    "excluded": ["Frontmatter", "Structural edits", "Settings", "Model calls", "External services"]
+  },
+  "evidence": {
+    "level": "live automated flow",
+    "real": ["Astro dev server", "Editor interaction", "Formatting", "Save request", "Source mutation", "Reload", "File assertion"],
+    "presentationOnly": ["Intro card", "Step labels", "Callouts", "Synthetic-data badge", "DOM cursor and click ring"]
+  },
+  "rubric": {
+    "Audience": "pass",
+    "Problem": "pass",
+    "Data": "pass",
+    "Workflow": "pass",
+    "Product proof": "pass",
+    "Value proof": "pass",
+    "Difference": "pass",
+    "Restraint": "pass"
+  }
+}

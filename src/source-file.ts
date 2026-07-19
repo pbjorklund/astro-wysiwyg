@@ -7,11 +7,17 @@ interface TextFileMutation<T> {
   result: T;
 }
 
+export type BeforeTextFileWrite = (
+  filePath: string,
+  source: string,
+) => void | Promise<void>;
+
 const pendingWrites = new Map<string, Promise<void>>();
 
 export async function mutateTextFile<T>(
   filePath: string,
   mutate: (source: string) => TextFileMutation<T> | Promise<TextFileMutation<T>>,
+  onBeforeWrite?: BeforeTextFileWrite,
 ): Promise<T> {
   const previous = pendingWrites.get(filePath) ?? Promise.resolve();
   let release!: () => void;
@@ -21,6 +27,7 @@ export async function mutateTextFile<T>(
 
   try {
     const mutation = await mutate(await readFile(filePath, 'utf8'));
+    await onBeforeWrite?.(filePath, mutation.source);
     await replaceTextFile(filePath, mutation.source);
     return mutation.result;
   } finally {

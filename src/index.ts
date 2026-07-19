@@ -1,6 +1,7 @@
+import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { AstroConfig, AstroIntegration } from 'astro';
-import type { ViteDevServer } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
 import { resolveAstroSourceMarker } from './astro-transform.ts';
 import {
   FrontmatterEditError,
@@ -16,6 +17,7 @@ import {
   type SourceStructureEdit,
 } from './persist.ts';
 import { rehypeEditableBlocks } from './rehype.ts';
+import type { BeforeTextFileWrite } from './source-file.ts';
 
 export interface WysiwygOptions {
   endpoint?: string;
@@ -27,6 +29,7 @@ const DEFAULT_ENDPOINT = '/_astro-wysiwyg/save';
 export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration {
   const endpoint = normalizeEndpoint(options.endpoint ?? DEFAULT_ENDPOINT);
   const saveDelay = options.saveDelay ?? 500;
+  const editorWrites = createEditorWriteHotUpdateFilter();
   let projectRoot = '';
   let sourceRoot = '';
 
@@ -43,6 +46,7 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
           markdown: processor
             ? { processor }
             : { rehypePlugins: [[rehypeEditableBlocks, { root: projectRoot }]] },
+          vite: { plugins: [editorWrites.plugin] },
         });
         injectScript(
           'page',
@@ -57,7 +61,7 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
       },
       'astro:server:setup': ({ server }) => {
         if (!sourceRoot) return;
-        registerSaveEndpoint(server, endpoint, projectRoot, sourceRoot);
+        registerSaveEndpoint(server, endpoint, projectRoot, sourceRoot, editorWrites.onBeforeWrite);
       },
     },
   };
@@ -68,6 +72,7 @@ function registerSaveEndpoint(
   endpoint: string,
   root: string,
   sourceRoot: string,
+  onBeforeWrite: BeforeTextFileWrite,
 ): void {
   server.middlewares.use(async (request, response, next) => {
     const pathname = new URL(request.url ?? '/', 'http://astro.local').pathname;
@@ -102,13 +107,13 @@ function registerSaveEndpoint(
         return sendJson(response, 200, { marker });
       }
       if (isStructureEdit(body)) {
-        const result = await applySourceStructureEdit(root, body, sourceRoot);
+        const result = await applySourceStructureEdit(root, body, sourceRoot, onBeforeWrite);
         return sendJson(response, 200, { marker: result.marker });
       }
       if (!isSourceEdit(body)) throw new SourceEditError('The edit request is incomplete.', 400);
       if (body.html.length > 1_000_000) throw new SourceEditError('This edit is too large to save.', 413);
 
-      const result = await applySourceEdit(root, body, undefined, sourceRoot);
+      const result = await applySourceEdit(root, body, onBeforeWrite, sourceRoot);
       return sendJson(response, 200, { marker: result.marker });
     } catch (error) {
       if (error instanceof SourceEditError || error instanceof FrontmatterEditError) {
@@ -120,6 +125,49 @@ function registerSaveEndpoint(
       return sendJson(response, 500, { error: 'The editor request could not be completed.' });
     }
   });
+}
+
+function createEditorWriteHotUpdateFilter(): {
+  plugin: Plugin;
+  onBeforeWrite: BeforeTextFileWrite;
+} {
+  const expectedSources = new Map<string, string[]>();
+  return {
+    onBeforeWrite(file, source) {
+      expectedSources.set(file, [...(expectedSources.get(file) ?? []), source]);
+    },
+    plugin: {
+      name: 'astro-wysiwyg:quiet-editor-writes',
+      enforce: 'pre',
+      async handleHotUpdate(context) {
+        let file: string;
+        try {
+          file = await realpath(context.file);
+        } catch {
+          return;
+        }
+        const expected = expectedSources.get(file);
+        if (!expected?.length) return;
+
+        let source: string;
+        try {
+          source = await context.read();
+        } catch {
+          expectedSources.delete(file);
+          return;
+        }
+        const match = expected.lastIndexOf(source);
+        if (match < 0) {
+          expectedSources.delete(file);
+          return;
+        }
+        const remaining = expected.slice(match + 1);
+        if (remaining.length) expectedSources.set(file, remaining);
+        else expectedSources.delete(file);
+        return [];
+      },
+    },
+  };
 }
 
 type ConfiguredMarkdownProcessor = NonNullable<AstroConfig['markdown']['processor']>;
