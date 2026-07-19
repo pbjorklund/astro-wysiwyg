@@ -403,11 +403,27 @@ test('restores sessions with invalid source locations and oversized carets', asy
     const session = JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}');
     session.sourceLocation = 'invalid';
     session.caret = 99_999;
+    delete session.html;
+    delete session.tag;
     sessionStorage.setItem('astro-wysiwyg-active', JSON.stringify(session));
   });
   await page.reload();
   await expect(first).toHaveAttribute('contenteditable', 'true');
   await first.press('Escape');
+  const second = page.locator('main > p').nth(1);
+  await second.evaluate((element) => {
+    const token = element.getAttribute('data-astro-wysiwyg');
+    if (!token) throw new Error('Missing source marker');
+    const marker = JSON.parse(atob(token.replace(/-/g, '+').replace(/_/g, '/')));
+    delete marker.original;
+    element.setAttribute(
+      'data-astro-wysiwyg',
+      btoa(JSON.stringify(marker)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''),
+    );
+    (element as HTMLElement).click();
+  });
+  await expect(second).toHaveAttribute('contenteditable', 'true');
+  await second.press('Escape');
   await page.evaluate(() => {
     const blocks = document.querySelectorAll('main > p');
     blocks[0]?.setAttribute('data-astro-wysiwyg', 'invalid');
@@ -660,6 +676,37 @@ test('times out a stalled save without blocking the next attempt', async ({ page
     releaseResponse();
     await page.unrouteAll({ behavior: 'wait' });
   }
+});
+
+test('switches blocks after saving the pending manual edit', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/guards');
+  const paragraphs = page.locator('main > p');
+  const first = paragraphs.first();
+  const second = paragraphs.nth(1);
+  await first.click();
+  await first.evaluate((element) => {
+    element.textContent += ' saved before switching';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    const request = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ marker: request.marker }),
+    });
+  });
+
+  await second.evaluate((element) => element.click());
+
+  await expect(first).not.toHaveAttribute('contenteditable', 'true');
+  await expect(second).toHaveAttribute('contenteditable', 'true');
+  await expect(second).toBeFocused();
 });
 
 test('keeps the previous block recoverable when switching blocks cannot save', async ({ page }) => {
@@ -1571,4 +1618,12 @@ test('applies enable, autosave, and outline preferences', async ({ page }) => {
   await heading.press('Control+s');
   await expect.poll(async () => readFile(astroFile, 'utf8')).toContain('Saved manually');
   await expect(page.locator('html')).not.toHaveAttribute('data-astro-wysiwyg-highlights', '');
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: false, autosave: false, highlights: false },
+    }));
+  });
+  await expect(heading).not.toHaveAttribute('contenteditable', 'true');
+  await expect(heading).not.toHaveAttribute('aria-describedby');
 });
