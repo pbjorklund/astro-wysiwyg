@@ -2,7 +2,12 @@ import { fileURLToPath } from 'node:url';
 import type { AstroConfig, AstroIntegration } from 'astro';
 import type { ViteDevServer } from 'vite';
 import { resolveAstroSourceMarker } from './astro-transform.ts';
-import { readFrontmatterFields, updateFrontmatterFields } from './frontmatter.ts';
+import {
+  FrontmatterEditError,
+  readFrontmatterFields,
+  updateFrontmatterFields,
+  type FrontmatterChange,
+} from './frontmatter.ts';
 import {
   applySourceEdit,
   applySourceStructureEdit,
@@ -23,6 +28,7 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
   const endpoint = normalizeEndpoint(options.endpoint ?? DEFAULT_ENDPOINT);
   const saveDelay = options.saveDelay ?? 500;
   let projectRoot = '';
+  let sourceRoot = '';
 
   return {
     name: 'astro-wysiwyg',
@@ -30,6 +36,7 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
       'astro:config:setup': ({ command, config, updateConfig, injectScript, addDevToolbarApp }) => {
         if (command !== 'dev') return;
         projectRoot = fileURLToPath(config.root);
+        sourceRoot = fileURLToPath(config.srcDir);
         const processor = getMarkdownProcessor(config.markdown);
         if (processor) addRehypePlugin(processor, projectRoot);
         updateConfig({
@@ -49,8 +56,8 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
         });
       },
       'astro:server:setup': ({ server }) => {
-        if (!projectRoot) return;
-        registerSaveEndpoint(server, endpoint, projectRoot);
+        if (!sourceRoot) return;
+        registerSaveEndpoint(server, endpoint, projectRoot, sourceRoot);
       },
     },
   };
@@ -60,11 +67,15 @@ function registerSaveEndpoint(
   server: ViteDevServer,
   endpoint: string,
   root: string,
+  sourceRoot: string,
 ): void {
   server.middlewares.use(async (request, response, next) => {
     const pathname = new URL(request.url ?? '/', 'http://astro.local').pathname;
     if (pathname !== endpoint) return next();
     if (request.method !== 'POST') return sendJson(response, 405, { error: 'Use POST to save an edit.' });
+    if (!isLoopbackAddress(request.socket.remoteAddress)) {
+      return sendJson(response, 403, { error: 'Source edits are available only from the local machine.' });
+    }
     if (!isSameOrigin(request.headers.origin, request.headers.host)) {
       return sendJson(response, 403, { error: 'The edit request came from another origin.' });
     }
@@ -75,11 +86,11 @@ function registerSaveEndpoint(
     try {
       const body = await readJsonBody(request);
       if (isFrontmatterReadRequest(body)) {
-        const fields = await readFrontmatterFields(root, body.contextMarker);
+        const fields = await readFrontmatterFields(root, body.contextMarker, sourceRoot);
         return sendJson(response, 200, { fields });
       }
       if (isFrontmatterUpdateRequest(body)) {
-        await updateFrontmatterFields(root, body.contextMarker, body.values);
+        await updateFrontmatterFields(root, body.contextMarker, body.changes, sourceRoot);
         return sendJson(response, 200, { saved: true });
       }
       if (isResolveRequest(body)) {
@@ -91,19 +102,22 @@ function registerSaveEndpoint(
         return sendJson(response, 200, { marker });
       }
       if (isStructureEdit(body)) {
-        const result = await applySourceStructureEdit(root, body);
+        const result = await applySourceStructureEdit(root, body, sourceRoot);
         return sendJson(response, 200, { marker: result.marker });
       }
       if (!isSourceEdit(body)) throw new SourceEditError('The edit request is incomplete.', 400);
       if (body.html.length > 1_000_000) throw new SourceEditError('This edit is too large to save.', 413);
 
-      const result = await applySourceEdit(root, body);
+      const result = await applySourceEdit(root, body, undefined, sourceRoot);
       return sendJson(response, 200, { marker: result.marker });
     } catch (error) {
-      const status = error instanceof SourceEditError ? error.status : 500;
+      if (error instanceof SourceEditError || error instanceof FrontmatterEditError) {
+        return sendJson(response, error.status, { error: error.message });
+      }
       /* c8 ignore next -- all integration and source boundaries throw Error instances. */
-      const message = error instanceof Error ? error.message : 'The edit could not be saved.';
-      return sendJson(response, status, { error: message });
+      const internalError = error instanceof Error ? error : new Error('Unknown editor request failure.');
+      server.config.logger.error('[astro-wysiwyg] Editor request failed.', { error: internalError });
+      return sendJson(response, 500, { error: 'The editor request could not be completed.' });
     }
   });
 }
@@ -137,13 +151,18 @@ function isFrontmatterReadRequest(value: unknown): value is {
 function isFrontmatterUpdateRequest(value: unknown): value is {
   frontmatter: 'update';
   contextMarker: string;
-  values: Record<string, string | boolean>;
+  changes: Record<string, FrontmatterChange>;
 } {
   if (!value || typeof value !== 'object') return false;
   const body = value as Record<string, unknown>;
   if (body.frontmatter !== 'update' || typeof body.contextMarker !== 'string') return false;
-  if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) return false;
-  return Object.values(body.values).every((item) => typeof item === 'string' || typeof item === 'boolean');
+  if (!body.changes || typeof body.changes !== 'object' || Array.isArray(body.changes)) return false;
+  return Object.values(body.changes).every((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const change = item as Record<string, unknown>;
+    return typeof change.original === 'string'
+      && (typeof change.value === 'string' || typeof change.value === 'boolean');
+  });
 }
 
 function isResolveRequest(value: unknown): value is {
@@ -183,6 +202,12 @@ function normalizeEndpoint(endpoint: string): string {
     throw new Error('astro-wysiwyg endpoint must be an absolute URL path.');
   }
   return endpoint.length > 1 && endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const normalized = address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address;
+  return normalized === '::1' || normalized.startsWith('127.');
 }
 
 function isSameOrigin(origin: string | undefined, host: string | undefined): boolean {

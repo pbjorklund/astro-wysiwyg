@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -9,7 +9,12 @@ import wysiwyg from '../src/index.ts';
 import { createMarker, encodeMarker } from '../src/marker.ts';
 
 type Middleware = (
-  request: Readable & { method?: string; url?: string; headers: Record<string, string> },
+  request: Readable & {
+    method?: string;
+    url?: string;
+    headers: Record<string, string>;
+    socket: { remoteAddress?: string };
+  },
   response: TestResponse,
   next: () => void,
 ) => void | Promise<void>;
@@ -25,18 +30,33 @@ interface TestResponse {
 async function saveMiddleware(
   root: string,
   options: Parameters<typeof wysiwyg>[0] = {},
+  loggedErrors: unknown[] = [],
+  sourceRoot = root,
 ): Promise<Middleware> {
   const integration = wysiwyg(options);
   await integration.hooks['astro:config:setup']?.({
     command: 'dev',
-    config: { root: pathToFileURL(`${root}${path.sep}`), markdown: {} },
+    config: {
+      root: pathToFileURL(`${root}${path.sep}`),
+      srcDir: pathToFileURL(`${sourceRoot}${path.sep}`),
+      markdown: {},
+    },
     updateConfig: (value: unknown) => value,
     injectScript: () => undefined,
     addDevToolbarApp: () => undefined,
   } as never);
   let middleware: Middleware | undefined;
   await integration.hooks['astro:server:setup']?.({
-    server: { middlewares: { use: (handler: Middleware) => { middleware = handler; } } },
+    server: {
+      config: {
+        logger: {
+          error: (_message: string, details: { error?: unknown } = {}) => {
+            loggedErrors.push(details.error);
+          },
+        },
+      },
+      middlewares: { use: (handler: Middleware) => { middleware = handler; } },
+    },
   } as never);
   assert.ok(middleware);
   return middleware;
@@ -50,12 +70,15 @@ async function send(
     origin: 'http://localhost:4321',
     'content-type': 'application/json',
   },
-  requestOptions: { method?: string; url?: string | null } = {},
+  requestOptions: { method?: string; remoteAddress?: string | null; url?: string | null } = {},
 ): Promise<TestResponse> {
   const request = Object.assign(Readable.from([body]), {
     method: requestOptions.method ?? 'POST',
     url: requestOptions.url === null ? undefined : (requestOptions.url ?? '/_astro-wysiwyg/save'),
     headers,
+    socket: requestOptions.remoteAddress === null
+      ? {}
+      : { remoteAddress: requestOptions.remoteAddress ?? '127.0.0.1' },
   });
   return new Promise((resolve, reject) => {
     const response: TestResponse = {
@@ -80,7 +103,7 @@ test('registers source annotation and client only for the dev command', async ()
   const toolbarApps: unknown[] = [];
   await integration.hooks['astro:config:setup']?.({
     command: 'dev',
-    config: { root: new URL('file:///project/') },
+    config: { root: new URL('file:///project/'), srcDir: new URL('file:///project/src/') },
     updateConfig: (value: unknown) => { updates.push(value); return value; },
     injectScript: (stage: string, content: string) => scripts.push([stage, content]),
     addDevToolbarApp: (app: unknown) => toolbarApps.push(app),
@@ -110,6 +133,54 @@ test('save endpoint persists a same-origin JSON edit', async (t) => {
   assert.equal(await readFile(file, 'utf8'), 'New text\n');
 });
 
+test('save endpoint writes only inside the configured source directory', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  const sourceRoot = path.join(root, 'src');
+  const sourceFile = path.join(sourceRoot, 'page.md');
+  const dependencyFile = path.join(root, 'node_modules/example/content.md');
+  const linkedSourceFile = path.join(sourceRoot, 'linked.md');
+  await Promise.all([
+    mkdir(sourceRoot, { recursive: true }),
+    mkdir(path.dirname(dependencyFile), { recursive: true }),
+  ]);
+  await writeFile(sourceFile, 'Source text\n');
+  const dependencySource = '---\ntitle: Dependency\n---\nDependency text\n';
+  await writeFile(dependencyFile, dependencySource);
+  await symlink(dependencyFile, linkedSourceFile);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const middleware = await saveMiddleware(root, {}, [], sourceRoot);
+
+  const sourceResponse = await send(middleware, JSON.stringify({
+    marker: encodeMarker(createMarker('src/page.md', 0, 11, 'Source text', 'markdown', 'p')),
+    html: 'Updated source',
+  }));
+  assert.equal(sourceResponse.statusCode, 200);
+  assert.equal(await readFile(sourceFile, 'utf8'), 'Updated source\n');
+
+  const dependencyTextStart = dependencySource.indexOf('Dependency text');
+  for (const file of ['node_modules/example/content.md', 'src/linked.md']) {
+    const marker = encodeMarker(createMarker(
+      file,
+      dependencyTextStart,
+      dependencyTextStart + 15,
+      'Dependency text',
+      'markdown',
+      'p',
+    ));
+    const edit = await send(middleware, JSON.stringify({ marker, html: 'Changed dependency' }));
+    assert.equal(edit.statusCode, 403, `${file} block edit`);
+    const structure = await send(middleware, JSON.stringify({ marker, operation: 'delete' }));
+    assert.equal(structure.statusCode, 403, `${file} structural edit`);
+    const frontmatter = await send(middleware, JSON.stringify({
+      frontmatter: 'update',
+      contextMarker: marker,
+      changes: { title: { value: 'Changed dependency', original: 'Dependency' } },
+    }));
+    assert.equal(frontmatter.statusCode, 403, `${file} frontmatter edit`);
+  }
+  assert.equal(await readFile(dependencyFile, 'utf8'), dependencySource);
+});
+
 test('save endpoint rejects a cross-origin request', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -123,6 +194,47 @@ test('save endpoint rejects a cross-origin request', async (t) => {
 
   assert.equal(response.statusCode, 403);
   assert.match(response.body, /another origin/);
+});
+
+test('save endpoint rejects source writes from non-loopback clients', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  const file = path.join(root, 'page.md');
+  await writeFile(file, 'Old text\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const middleware = await saveMiddleware(root);
+  const marker = encodeMarker(createMarker('page.md', 0, 8, 'Old text', 'markdown', 'p'));
+
+  const response = await send(
+    middleware,
+    JSON.stringify({ marker, html: 'Remote edit', tag: 'p' }),
+    undefined,
+    { remoteAddress: '192.168.1.25' },
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.match(response.body, /local machine/);
+  assert.equal(await readFile(file, 'utf8'), 'Old text\n');
+
+  const missingAddress = await send(
+    middleware,
+    JSON.stringify({ marker, html: 'Unknown client', tag: 'p' }),
+    undefined,
+    { remoteAddress: null },
+  );
+  assert.equal(missingAddress.statusCode, 403);
+  assert.equal(await readFile(file, 'utf8'), 'Old text\n');
+});
+
+test('save endpoint accepts IPv4-mapped and IPv6 loopback clients', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const middleware = await saveMiddleware(root);
+
+  for (const remoteAddress of ['::ffff:127.0.0.1', '::1']) {
+    const response = await send(middleware, '{}', undefined, { remoteAddress });
+    assert.equal(response.statusCode, 400, remoteAddress);
+    assert.match(response.body, /incomplete/, remoteAddress);
+  }
 });
 
 test('save endpoint rejects a non-JSON request', async (t) => {
@@ -158,7 +270,11 @@ test('reuses a configured unified Markdown processor', async () => {
   let update: unknown;
   await integration.hooks['astro:config:setup']?.({
     command: 'dev',
-    config: { root: new URL('file:///project/'), markdown: { processor } },
+    config: {
+      root: new URL('file:///project/'),
+      srcDir: new URL('file:///project/src/'),
+      markdown: { processor },
+    },
     updateConfig: (value: unknown) => { update = value; return value; },
     injectScript: () => undefined,
     addDevToolbarApp: () => undefined,
@@ -178,7 +294,11 @@ test('falls back when a configured Markdown processor cannot accept rehype plugi
     let update: unknown;
     await integration.hooks['astro:config:setup']?.({
       command: 'dev',
-      config: { root: new URL('file:///project/'), markdown: { processor } },
+      config: {
+        root: new URL('file:///project/'),
+        srcDir: new URL('file:///project/src/'),
+        markdown: { processor },
+      },
       updateConfig: (value: unknown) => { update = value; return value; },
       injectScript: () => undefined,
       addDevToolbarApp: () => undefined,
@@ -247,14 +367,55 @@ test('save endpoint reads and updates frontmatter', async (t) => {
 
   const read = await send(middleware, JSON.stringify({ frontmatter: 'read', contextMarker: marker }));
   assert.equal(read.statusCode, 200);
-  assert.match(read.body, /"title"/);
+  const fields = (JSON.parse(read.body) as {
+    fields: Array<{ name: string; original: string }>;
+  }).fields;
+  assert.equal(fields.find((field) => field.name === 'title')?.original, 'Old');
   const update = await send(middleware, JSON.stringify({
     frontmatter: 'update',
     contextMarker: marker,
-    values: { title: 'New', enabled: true },
+    changes: {
+      title: { value: 'New', original: 'Old' },
+      enabled: { value: true, original: 'false' },
+    },
   }));
   assert.equal(update.statusCode, 200);
   assert.match(await readFile(file, 'utf8'), /title: New\nenabled: true/);
+
+  const conflict = await send(middleware, JSON.stringify({
+    frontmatter: 'update',
+    contextMarker: marker,
+    changes: { title: { value: 'Overwrite', original: 'Old' } },
+  }));
+  assert.equal(conflict.statusCode, 409);
+  assert.match(conflict.body, /title frontmatter field changed on disk/);
+  assert.match(await readFile(file, 'utf8'), /title: New\nenabled: true/);
+});
+
+test('save endpoint returns actionable frontmatter value validation errors', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  const file = path.join(root, 'page.md');
+  const source = '---\npublishedAt: 2026-06-24\npublishedHour: 14\n---\nBody\n';
+  await writeFile(file, source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const loggedErrors: unknown[] = [];
+  const middleware = await saveMiddleware(root, {}, loggedErrors);
+  const marker = encodeMarker(createMarker('page.md', 0, 0, '', 'markdown', 'p'));
+
+  for (const [name, value, original, message] of [
+    ['publishedHour', 'afternoon', '14', 'publishedHour must be a number.'],
+    ['publishedAt', 'June 24', '2026-06-24', 'publishedAt must use YYYY-MM-DD.'],
+  ] as const) {
+    const response = await send(middleware, JSON.stringify({
+      frontmatter: 'update',
+      contextMarker: marker,
+      changes: { [name]: { value, original } },
+    }));
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(JSON.parse(response.body), { error: message });
+  }
+  assert.deepEqual(loggedErrors, []);
+  assert.equal(await readFile(file, 'utf8'), source);
 });
 
 test('save endpoint resolves Astro markers and applies structural edits', async (t) => {
@@ -302,8 +463,13 @@ test('save endpoint rejects every malformed request shape', async (t) => {
     '[]',
     JSON.stringify({ frontmatter: 'read' }),
     JSON.stringify({ frontmatter: 'update', contextMarker: 'token' }),
-    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', values: [] }),
-    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', values: { field: 1 } }),
+    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', changes: [] }),
+    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', changes: { field: 1 } }),
+    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', changes: { field: [] } }),
+    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', changes: { field: { value: 'next' } } }),
+    JSON.stringify({ frontmatter: 'update', contextMarker: 'token', changes: {
+      field: { value: 1, original: 'old' },
+    } }),
     JSON.stringify({ sourceFile: 1, sourceLocation: '1:1' }),
     JSON.stringify({ sourceFile: 'page.astro', sourceLocation: 1 }),
     JSON.stringify({ sourceFile: 'page.astro', sourceLocation: '1:1', contextMarker: 1 }),
@@ -332,17 +498,23 @@ test('supports the root endpoint without trailing-slash normalization', async (t
   assert.equal(response.statusCode, 400);
 });
 
-test('save endpoint maps unexpected source errors to server errors', async (t) => {
+test('save endpoint redacts unexpected source errors from responses', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
-  const file = path.join(root, 'page.md');
-  await writeFile(file, 'Body without frontmatter\n');
   t.after(() => rm(root, { recursive: true, force: true }));
-  const middleware = await saveMiddleware(root);
-  const marker = encodeMarker(createMarker('page.md', 0, 0, '', 'markdown', 'p'));
+  const loggedErrors: unknown[] = [];
+  const middleware = await saveMiddleware(root, {}, loggedErrors);
+  const missingFile = path.join(root, 'missing.astro');
 
-  const response = await send(middleware, JSON.stringify({ frontmatter: 'read', contextMarker: marker }));
+  const response = await send(middleware, JSON.stringify({
+    sourceFile: missingFile,
+    sourceLocation: '1:1',
+  }));
+
   assert.equal(response.statusCode, 500);
-  assert.match(response.body, /no frontmatter/);
+  assert.deepEqual(JSON.parse(response.body), { error: 'The editor request could not be completed.' });
+  assert.equal(response.body.includes(root), false);
+  assert.equal(loggedErrors.length, 1);
+  assert.match(String(loggedErrors[0]), new RegExp(missingFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 test('does not register editor code for build', async () => {

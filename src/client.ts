@@ -1,3 +1,4 @@
+import { EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
 import {
   FRONTMATTER_EVENT,
   PREFERENCES_EVENT,
@@ -19,28 +20,49 @@ interface FrontmatterFieldResponse {
   name: string;
   type: 'boolean' | 'date' | 'list' | 'number' | 'string';
   value: string | boolean;
+  original: string;
+}
+
+interface FrontmatterChangeRequest {
+  value: string | boolean;
+  original: string;
 }
 
 const MARKER_ATTRIBUTE = 'data-astro-wysiwyg';
 const ACTIVE_ATTRIBUTE = 'data-astro-wysiwyg-active';
-const BLOCK_TAGS = [
-  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'figcaption', 'dt', 'dd', 'td', 'th',
-  'caption', 'legend', 'summary', 'button', 'label',
-];
-const SOURCE_SELECTOR = BLOCK_TAGS
+const NATIVE_ACTION_TAGS = new Set(['button', 'label', 'summary']);
+const SOURCE_SELECTOR = EDITABLE_BLOCK_TAGS
   .map((tag) => `${tag}[data-wysiwyg-source-file][data-wysiwyg-source-loc]`)
   .join(',');
-const ASTRO_SOURCE_SELECTOR = BLOCK_TAGS
+const ASTRO_SOURCE_SELECTOR = EDITABLE_BLOCK_TAGS
   .map((tag) => `${tag}[data-astro-source-file][data-astro-source-loc]`)
   .join(',');
 const EDITABLE_SELECTOR = `[${MARKER_ATTRIBUTE}],${SOURCE_SELECTOR}`;
 const PREPARE_SELECTOR = `${EDITABLE_SELECTOR},${ASTRO_SOURCE_SELECTOR}`;
 const HOST_ID = 'astro-wysiwyg-toolbar';
+const EDIT_INSTRUCTIONS_ID = 'astro-wysiwyg-edit-instructions';
+const PERSIST_ATTRIBUTE = 'data-astro-transition-persist';
+const STYLE_PERSIST_KEY = 'astro-wysiwyg-style';
+const SAVE_REQUEST_TIMEOUT = 10_000;
 const SESSION_KEY = 'astro-wysiwyg-active';
+const FRONTMATTER_DRAFT_KEY = 'astro-wysiwyg-frontmatter-draft';
 
 interface EditSnapshot {
   html: string;
   tag: string;
+}
+
+interface QueuedSave extends EditSnapshot {
+  element: HTMLElement;
+  promise: Promise<boolean>;
+  resolve(saved: boolean): void;
+  text: string;
+}
+
+interface FrontmatterDraft {
+  pathname: string;
+  contextMarker: string;
+  changes: Record<string, FrontmatterChangeRequest>;
 }
 
 interface ActiveSession {
@@ -54,8 +76,10 @@ interface ActiveSession {
   tag?: string;
   caret?: number;
   history?: EditSnapshot[];
+  dirty?: boolean;
   saving?: boolean;
   suppressAutosave?: boolean;
+  sourceOriginal?: string;
 }
 
 export function startEditor(options: EditorOptions): void {
@@ -63,7 +87,8 @@ export function startEditor(options: EditorOptions): void {
 
   let active: HTMLElement | null = null;
   let saveTimer: number | undefined;
-  let saveQueue = Promise.resolve();
+  const pendingSaves: QueuedSave[] = [];
+  let saveInFlight = false;
   let preferences = readPreferences();
   let undoHistory: EditSnapshot[] = [];
   let linkRange: Range | undefined;
@@ -74,15 +99,22 @@ export function startEditor(options: EditorOptions): void {
   let suppressRestoredAutosave = false;
   const host = document.createElement('div');
   host.id = HOST_ID;
+  host.setAttribute(PERSIST_ATTRIBUTE, HOST_ID);
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = toolbarMarkup();
-  document.body.append(host);
+  const editInstructions = document.createElement('span');
+  editInstructions.id = EDIT_INSTRUCTIONS_ID;
+  editInstructions.setAttribute(PERSIST_ATTRIBUTE, EDIT_INSTRUCTIONS_ID);
+  editInstructions.hidden = true;
+  editInstructions.textContent = 'Editable source content. Press Enter to edit. Press Alt+Up or Alt+Down to move between editable blocks.';
+  document.body.append(host, editInstructions);
 
   const toolbar = shadow.querySelector<HTMLElement>('[role="toolbar"]')!;
   const status = shadow.querySelector<HTMLElement>('[role="status"]')!;
 
   const globalStyle = document.createElement('style');
   globalStyle.dataset.astroWysiwygStyle = '';
+  globalStyle.setAttribute(PERSIST_ATTRIBUTE, STYLE_PERSIST_KEY);
   globalStyle.textContent = `
     html[data-astro-wysiwyg-enabled] :is(${EDITABLE_SELECTOR}) { cursor: text; }
     html[data-astro-wysiwyg-highlights] :is(${EDITABLE_SELECTOR}):hover { outline: 1px dashed Highlight; outline-offset: 3px; }
@@ -93,14 +125,13 @@ export function startEditor(options: EditorOptions): void {
   applyPreferences(preferences);
 
   prepareEditableBlocks(document);
-  void restoreActiveSession();
-  document.addEventListener('astro:page-load', () => {
-    prepareEditableBlocks(document);
-    void restoreActiveSession();
-  });
+  void restorePageState();
+  document.addEventListener('astro:before-swap', onBeforeSwap);
+  document.addEventListener('astro:page-load', onPageLoad);
   document.addEventListener('click', onDocumentClick, true);
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('input', onInput, true);
+  document.addEventListener('focusin', onDocumentFocus);
   document.addEventListener('selectionchange', rememberActiveSession);
   document.addEventListener(PREFERENCES_EVENT, onPreferences);
   document.addEventListener(FRONTMATTER_EVENT, () => void openFrontmatterEditor());
@@ -111,6 +142,38 @@ export function startEditor(options: EditorOptions): void {
   });
   shadow.addEventListener('click', onToolbarClick);
   shadow.addEventListener('keydown', onToolbarKeyDown);
+  shadow.addEventListener('input', rememberFrontmatterDraft);
+
+  function onBeforeSwap(event: Event): void {
+    const newDocument = (event as Event & { newDocument: Document }).newDocument;
+    addPersistencePlaceholder(newDocument.body, 'div', HOST_ID);
+    addPersistencePlaceholder(newDocument.body, 'span', EDIT_INSTRUCTIONS_ID);
+    addPersistencePlaceholder(newDocument.head, 'style', STYLE_PERSIST_KEY);
+  }
+
+  function addPersistencePlaceholder(parent: HTMLElement, tag: string, key: string): void {
+    const placeholder = parent.ownerDocument.createElement(tag);
+    placeholder.setAttribute(PERSIST_ATTRIBUTE, key);
+    parent.append(placeholder);
+  }
+
+  function onPageLoad(): void {
+    if (active && !active.isConnected) {
+      active = null;
+      toolbar.hidden = true;
+      undoHistory = [];
+    }
+    closeFrontmatterEditor();
+    closeLinkEditor();
+    applyPreferences(preferences);
+    prepareEditableBlocks(document);
+    void restorePageState();
+  }
+
+  async function restorePageState(): Promise<void> {
+    await restoreActiveSession();
+    await restoreFrontmatterDraft();
+  }
 
   function onPreferences(event: Event): void {
     if (!(event instanceof CustomEvent)) return;
@@ -131,24 +194,78 @@ export function startEditor(options: EditorOptions): void {
         element.removeAttribute('tabindex');
         delete element.dataset.wysiwygAddedTabindex;
       }
+      for (const element of document.querySelectorAll<HTMLElement>('[data-wysiwyg-added-description]')) {
+        removeEditDescription(element);
+      }
       return;
     }
     prepareEditableBlocks(document);
   }
 
   function prepareEditableBlocks(root: ParentNode): void {
-    for (const element of root.querySelectorAll<HTMLElement>(PREPARE_SELECTOR)) {
+    const elements = [...root.querySelectorAll<HTMLElement>(PREPARE_SELECTOR)];
+    for (const element of elements) {
       const sourceFile = element.getAttribute('data-astro-source-file');
       const sourceLocation = element.getAttribute('data-astro-source-loc');
       if (sourceFile && sourceLocation) {
         element.dataset.wysiwygSourceFile = sourceFile;
         element.dataset.wysiwygSourceLoc = sourceLocation;
       }
-      if (preferences.enabled && !element.hasAttribute('tabindex')) {
-        element.tabIndex = 0;
-        element.dataset.wysiwygAddedTabindex = '';
-      }
     }
+    if (!preferences.enabled) return;
+
+    const managed = elements.filter((element) => (
+      element.hasAttribute('data-wysiwyg-added-tabindex') || !element.hasAttribute('tabindex')
+    ));
+    const roving = managed.find((element) => element === active)
+      ?? managed.find((element) => element.hasAttribute('data-wysiwyg-added-tabindex') && element.tabIndex === 0)
+      ?? managed[0];
+    for (const element of managed) {
+      element.tabIndex = element === roving ? 0 : -1;
+      element.dataset.wysiwygAddedTabindex = '';
+    }
+    for (const element of elements) addEditDescription(element);
+  }
+
+  function setRovingTabStop(target: HTMLElement): void {
+    if (!target.hasAttribute('data-wysiwyg-added-tabindex')) return;
+    for (const element of document.querySelectorAll<HTMLElement>('[data-wysiwyg-added-tabindex]')) {
+      element.tabIndex = element === target ? 0 : -1;
+    }
+  }
+
+  function onDocumentFocus(event: FocusEvent): void {
+    if (event.target instanceof HTMLElement && event.target.matches(EDITABLE_SELECTOR)) {
+      setRovingTabStop(event.target);
+    }
+  }
+
+  function moveEditableFocus(current: HTMLElement, direction: -1 | 1): void {
+    const elements = [...document.querySelectorAll<HTMLElement>(EDITABLE_SELECTOR)];
+    const index = elements.indexOf(current);
+    const target = elements[(index + direction + elements.length) % elements.length];
+    setRovingTabStop(target);
+    target.focus();
+  }
+
+  function addEditDescription(element: HTMLElement): void {
+    const descriptions = (element.getAttribute('aria-describedby') ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((id) => id !== EDIT_INSTRUCTIONS_ID);
+    descriptions.push(EDIT_INSTRUCTIONS_ID);
+    element.setAttribute('aria-describedby', descriptions.join(' '));
+    element.dataset.wysiwygAddedDescription = '';
+  }
+
+  function removeEditDescription(element: HTMLElement): void {
+    const descriptions = (element.getAttribute('aria-describedby') ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((id) => id !== EDIT_INSTRUCTIONS_ID);
+    if (descriptions.length) element.setAttribute('aria-describedby', descriptions.join(' '));
+    else element.removeAttribute('aria-describedby');
+    delete element.dataset.wysiwygAddedDescription;
   }
 
   function onDocumentClick(event: MouseEvent): void {
@@ -162,7 +279,10 @@ export function startEditor(options: EditorOptions): void {
       if (list?.matches(EDITABLE_SELECTOR)) block = list;
     }
     if (!block) return;
-    if (target.closest('a')) event.preventDefault();
+    setRovingTabStop(block);
+    const hasNativeAction = NATIVE_ACTION_TAGS.has(block.localName);
+    if (target.closest('a') || hasNativeAction) event.preventDefault();
+    if (hasNativeAction) event.stopPropagation();
     suppressRestoredAutosave = false;
     void activate(block);
   }
@@ -170,15 +290,23 @@ export function startEditor(options: EditorOptions): void {
   async function activate(block: HTMLElement): Promise<HTMLElement | undefined> {
     if (!preferences.enabled) return undefined;
     if (!block.hasAttribute(MARKER_ATTRIBUTE) && !await resolveSourceMarker(block)) return undefined;
+    setRovingTabStop(block);
     if (active === block) return active;
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
     if (isLinkEditorOpen()) closeLinkEditor();
     if (active) {
       const previous = active;
-      if (hasUnsavedChanges(previous)) queueSave(previous);
+      if (hasUnsavedChanges(previous)) {
+        const saved = await queueSave(previous);
+        if (!saved) {
+          previous.focus({ preventScroll: true });
+          return undefined;
+        }
+      }
       deactivate(previous);
     }
     active = block;
+    removeEditDescription(active);
     active.setAttribute('contenteditable', 'true');
     active.setAttribute(ACTIVE_ATTRIBUTE, '');
     undoHistory = [snapshot(active)];
@@ -196,7 +324,7 @@ export function startEditor(options: EditorOptions): void {
     if (active) return;
     const session = readActiveSession();
     if (!session || session.pathname !== location.pathname) return;
-    suppressRestoredAutosave = Boolean(session.saving || session.suppressAutosave);
+    suppressRestoredAutosave = Boolean(session.suppressAutosave);
     let block: HTMLElement | undefined;
     if (session.sourceFile && session.sourceLocation) {
       block = [...document.querySelectorAll<HTMLElement>(SOURCE_SELECTOR)]
@@ -216,23 +344,53 @@ export function startEditor(options: EditorOptions): void {
     if (!block) return;
     let restored = await activate(block);
     if (!restored) return;
-    /* istanbul ignore else -- Sessions written by this client include at least one checkpoint. */
-    if (session.history?.length) undoHistory = session.history;
-    if (session.tag && restored.localName !== session.tag) {
+    const draftSnapshot = session.html !== undefined && session.tag !== undefined
+      ? { html: session.html, tag: session.tag }
+      : undefined;
+    const currentSource = decodeClientMarker(restored.getAttribute(MARKER_ATTRIBUTE))?.original;
+    const hasDraft = Boolean(session.dirty || session.saving || session.suppressAutosave);
+    const sourceChanged = session.sourceOriginal !== undefined
+      && currentSource !== undefined
+      && session.sourceOriginal !== currentSource;
+    let restoredDraftState: 'clean' | 'committed' | 'conflict' | 'pending' = 'clean';
+    if (hasDraft) {
+      if (session.sourceOriginal !== undefined && session.sourceOriginal === currentSource) {
+        restoredDraftState = 'pending';
+      } else if (draftSnapshot && sameSnapshot(snapshot(restored), draftSnapshot)) {
+        restoredDraftState = 'committed';
+      } else {
+        restoredDraftState = 'conflict';
+      }
+    }
+    suppressRestoredAutosave = Boolean(
+      session.suppressAutosave || restoredDraftState === 'committed' || restoredDraftState === 'conflict',
+    );
+    if (session.history?.length && !(restoredDraftState === 'clean' && sourceChanged)) {
+      undoHistory = session.history;
+    }
+    const shouldRestoreDraft = hasDraft && restoredDraftState !== 'committed';
+    let draftRestored = false;
+    if (shouldRestoreDraft && session.tag && restored.localName !== session.tag) {
       changeBlockTag(session.tag, false, false);
       /* istanbul ignore next -- Tag replacement always installs the replacement as active. */
       restored = active ?? restored;
+      draftRestored = true;
     }
-    if (session.html !== undefined && restored.innerHTML !== session.html) {
+    if (shouldRestoreDraft && session.html !== undefined && restored.innerHTML !== session.html) {
       restored.innerHTML = session.html;
-      if (preferences.autosave && !suppressRestoredAutosave) {
-        window.clearTimeout(saveTimer);
-        saveTimer = window.setTimeout(() => queueSave(restored), options.saveDelay);
-      }
+      draftRestored = true;
+    }
+    if (restoredDraftState === 'committed') checkpoint(restored);
+    if (draftRestored && preferences.autosave && !suppressRestoredAutosave) {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(() => queueSave(restored), options.saveDelay);
     }
     setCaretOffset(restored, session.caret);
     rememberActiveSession();
     updateUndoButton();
+    if (restoredDraftState === 'conflict') {
+      setStatus('The source changed since this draft began. Review this block before saving again.', true);
+    }
   }
 
   function rememberActiveSession(): void {
@@ -249,8 +407,10 @@ export function startEditor(options: EditorOptions): void {
       tag: active.localName,
       caret: getCaretOffset(active),
       history: undoHistory,
+      dirty: hasUnsavedChanges(active) || activeSaveInFlight,
       saving: activeSaveInFlight,
       suppressAutosave: suppressRestoredAutosave,
+      sourceOriginal: marker?.original,
     };
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
@@ -290,6 +450,7 @@ export function startEditor(options: EditorOptions): void {
   function deactivate(element: HTMLElement): void {
     element.removeAttribute('contenteditable');
     element.removeAttribute(ACTIVE_ATTRIBUTE);
+    if (preferences.enabled) addEditDescription(element);
   }
 
   function onInput(event: Event): void {
@@ -309,6 +470,12 @@ export function startEditor(options: EditorOptions): void {
   function onKeyDown(event: KeyboardEvent): void {
     if (!preferences.enabled) return;
     const target = event.target;
+    if (!active && event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      && target instanceof HTMLElement && target.matches(EDITABLE_SELECTOR)) {
+      event.preventDefault();
+      moveEditableFocus(target, event.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
     if (!active && event.key === 'Enter' && target instanceof HTMLElement && target.matches(EDITABLE_SELECTOR)) {
       event.preventDefault();
       void activate(target);
@@ -361,7 +528,7 @@ export function startEditor(options: EditorOptions): void {
     }
     if (event.key !== 'Escape') return;
     event.preventDefault();
-    if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
+    if (isFrontmatterEditorOpen()) closeFrontmatterEditor(true);
     else if (isLinkEditorOpen()) closeLinkEditor();
     else void finishEditing();
   }
@@ -377,7 +544,7 @@ export function startEditor(options: EditorOptions): void {
       return;
     }
     if (action === 'cancel-frontmatter') {
-      closeFrontmatterEditor();
+      closeFrontmatterEditor(true);
       return;
     }
     if (!active) return;
@@ -525,7 +692,7 @@ export function startEditor(options: EditorOptions): void {
     for (const element of candidates) {
       const token = element?.getAttribute(MARKER_ATTRIBUTE);
       const marker = decodeClientMarker(token ?? null);
-      if (token && marker && /\.(?:md|mdx|mdoc)$/i.test(marker.file)) return token;
+      if (token && marker && /\.(?:md|mdx)$/i.test(marker.file)) return token;
     }
     return undefined;
   }
@@ -535,9 +702,33 @@ export function startEditor(options: EditorOptions): void {
     return shadow.querySelector<HTMLDialogElement>('.frontmatter-editor')?.open ?? false;
   }
 
-  async function openFrontmatterEditor(): Promise<void> {
+  async function restoreFrontmatterDraft(): Promise<void> {
+    const draft = readFrontmatterDraft();
+    if (draft) await openFrontmatterEditor(draft);
+  }
+
+  function readFrontmatterDraft(): FrontmatterDraft | undefined {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(FRONTMATTER_DRAFT_KEY) ?? 'null') as unknown;
+      if (!value || typeof value !== 'object') return undefined;
+      const draft = value as Record<string, unknown>;
+      if (draft.pathname !== location.pathname || typeof draft.contextMarker !== 'string') return undefined;
+      if (!draft.changes || typeof draft.changes !== 'object' || Array.isArray(draft.changes)) return undefined;
+      for (const change of Object.values(draft.changes)) {
+        if (!change || typeof change !== 'object' || Array.isArray(change)) return undefined;
+        const fields = change as Record<string, unknown>;
+        if (typeof fields.original !== 'string'
+          || (typeof fields.value !== 'string' && typeof fields.value !== 'boolean')) return undefined;
+      }
+      return draft as unknown as FrontmatterDraft;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function openFrontmatterEditor(draft?: FrontmatterDraft): Promise<void> {
     if (isLinkEditorOpen()) closeLinkEditor();
-    const marker = findFrontmatterContextMarker();
+    const marker = draft?.contextMarker ?? findFrontmatterContextMarker();
     const editor = shadow.querySelector<HTMLDialogElement>('.frontmatter-editor');
     const fields = shadow.querySelector<HTMLElement>('.frontmatter-fields');
     /* istanbul ignore next -- These controls are static frontmatter-editor markup. */
@@ -565,8 +756,11 @@ export function startEditor(options: EditorOptions): void {
       if (!response.ok || !body.fields) throw new Error(body.error ?? 'Frontmatter could not be loaded.');
       frontmatterFields = body.fields;
       renderFrontmatterFields(fields, frontmatterFields);
-      /* istanbul ignore next -- Empty field collections are a valid endpoint fallback. */
-      setFrontmatterMessage(frontmatterFields.length ? '' : 'No simple frontmatter fields were found.');
+      if (draft) restoreFrontmatterDraftFields(draft);
+      else {
+        /* istanbul ignore next -- Empty field collections are a valid endpoint fallback. */
+        setFrontmatterMessage(frontmatterFields.length ? '' : 'No simple frontmatter fields were found.');
+      }
       fields.querySelector<HTMLInputElement>('input')?.focus();
     } catch (error) {
       /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
@@ -596,10 +790,29 @@ export function startEditor(options: EditorOptions): void {
     }
   }
 
-  async function saveFrontmatter(): Promise<void> {
-    /* istanbul ignore next -- The save action is only rendered with a frontmatter context. */
-    if (!frontmatterContext) return;
-    const values: Record<string, string | boolean> = {};
+  function restoreFrontmatterDraftFields(draft: FrontmatterDraft): void {
+    let restored = false;
+    for (const field of frontmatterFields) {
+      const change = draft.changes[field.name];
+      if (!change) continue;
+      const input = shadow.querySelector<HTMLInputElement>(
+        `[data-frontmatter-field="${CSS.escape(field.name)}"]`,
+      );
+      /* istanbul ignore next -- Inputs are rendered from this same field collection. */
+      if (!input) continue;
+      if (field.type === 'boolean' && typeof change.value === 'boolean') input.checked = change.value;
+      else if (field.type !== 'boolean' && typeof change.value === 'string') input.value = change.value;
+      else continue;
+      field.original = change.original;
+      restored = true;
+    }
+    setFrontmatterMessage(restored
+      ? 'Restored unsaved frontmatter changes.'
+      : 'The unsaved frontmatter fields are no longer available.');
+  }
+
+  function collectFrontmatterChanges(): Record<string, FrontmatterChangeRequest> {
+    const changes: Record<string, FrontmatterChangeRequest> = {};
     for (const field of frontmatterFields) {
       const input = shadow.querySelector<HTMLInputElement>(
         `[data-frontmatter-field="${CSS.escape(field.name)}"]`,
@@ -607,10 +820,34 @@ export function startEditor(options: EditorOptions): void {
       /* istanbul ignore next -- Inputs are rendered from this same field collection. */
       if (!input) continue;
       const value = field.type === 'boolean' ? input.checked : input.value;
-      if (value !== field.value) values[field.name] = value;
+      if (value !== field.value) changes[field.name] = { value, original: field.original };
     }
-    if (Object.keys(values).length === 0) {
-      closeFrontmatterEditor();
+    return changes;
+  }
+
+  function rememberFrontmatterDraft(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)
+      || !event.target.hasAttribute('data-frontmatter-field')
+      || !frontmatterContext) return;
+    const changes = collectFrontmatterChanges();
+    try {
+      if (Object.keys(changes).length === 0) sessionStorage.removeItem(FRONTMATTER_DRAFT_KEY);
+      else sessionStorage.setItem(FRONTMATTER_DRAFT_KEY, JSON.stringify({
+        pathname: location.pathname,
+        contextMarker: frontmatterContext,
+        changes,
+      } satisfies FrontmatterDraft));
+    } catch {
+      // Frontmatter editing still works when session storage is unavailable.
+    }
+  }
+
+  async function saveFrontmatter(): Promise<void> {
+    /* istanbul ignore next -- The save action is only rendered with a frontmatter context. */
+    if (!frontmatterContext) return;
+    const changes = collectFrontmatterChanges();
+    if (Object.keys(changes).length === 0) {
+      closeFrontmatterEditor(true);
       return;
     }
 
@@ -622,26 +859,33 @@ export function startEditor(options: EditorOptions): void {
         body: JSON.stringify({
           frontmatter: 'update',
           contextMarker: frontmatterContext,
-          values,
+          changes,
         }),
       });
       const body = await response.json() as { saved?: boolean; error?: string };
       /* istanbul ignore next -- The endpoint always supplies an error for rejected requests. */
       if (!response.ok || !body.saved) throw new Error(body.error ?? 'Frontmatter could not be saved.');
       setStatus('Saved');
-      closeFrontmatterEditor();
+      closeFrontmatterEditor(true);
     } catch (error) {
       /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
       setFrontmatterMessage(error instanceof Error ? error.message : 'Frontmatter could not be saved.');
     }
   }
 
-  function closeFrontmatterEditor(): void {
+  function closeFrontmatterEditor(discardDraft = false): void {
     const editor = shadow.querySelector<HTMLDialogElement>('.frontmatter-editor');
     /* istanbul ignore else -- Close is called for an open static dialog or as an idempotent cleanup. */
     if (editor?.open) editor.close();
     frontmatterContext = undefined;
     frontmatterFields = [];
+    if (discardDraft) {
+      try {
+        sessionStorage.removeItem(FRONTMATTER_DRAFT_KEY);
+      } catch {
+        // The dialog still closes when session storage is unavailable.
+      }
+    }
     setFrontmatterMessage('');
     active?.focus({ preventScroll: true });
   }
@@ -933,52 +1177,89 @@ export function startEditor(options: EditorOptions): void {
     const text = element.textContent ?? '';
     const tag = element.localName;
     setStatus('Saving...');
-    const save = saveQueue.then(async () => {
-      const marker = element.getAttribute(MARKER_ATTRIBUTE);
-      if (!marker) {
-        /* istanbul ignore else -- Missing markers are detected on the current active block. */
-        if (element === active) {
-          activeSaveInFlight = false;
-          rememberActiveSession();
-        }
-        setStatus('Missing source marker.', true);
-        return false;
+    const pending = pendingSaves.find((save) => save.element === element);
+    if (pending) {
+      pending.html = html;
+      pending.text = text;
+      pending.tag = tag;
+      return pending.promise;
+    }
+
+    let resolve!: (saved: boolean) => void;
+    const promise = new Promise<boolean>((complete) => { resolve = complete; });
+    pendingSaves.push({ element, html, promise, resolve, tag, text });
+    void drainSaveQueue();
+    return promise;
+  }
+
+  async function drainSaveQueue(): Promise<void> {
+    if (saveInFlight) return;
+    saveInFlight = true;
+    try {
+      while (pendingSaves.length) {
+        const save = pendingSaves.shift()!;
+        save.resolve(await saveSnapshot(save));
       }
-      setStatus('Saving...');
-      try {
-        const response = await fetch(options.endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ marker, html, text, tag }),
-        });
-        const body = await response.json() as SaveResponse;
-        /* istanbul ignore next -- The endpoint always supplies an error for rejected requests. */
-        if (!response.ok || !body.marker) throw new Error(body.error ?? 'The source file could not be saved.');
-        /* istanbul ignore else -- Unchanged DOM markers are refreshed from successful responses. */
-        if (element.getAttribute(MARKER_ATTRIBUTE) === marker) {
-          element.setAttribute(MARKER_ATTRIBUTE, body.marker);
-        }
-        /* istanbul ignore else -- An inactive block needs no active-session update. */
-        if (element === active) {
-          activeSaveInFlight = false;
-          suppressRestoredAutosave = sameSnapshot(snapshot(element), { html, tag });
-          checkpoint(element, { html, tag });
-        }
-        setStatus('Saved');
-        return true;
-      } catch (error) {
-        /* istanbul ignore else -- An inactive block needs no active-session update. */
-        if (element === active) {
-          activeSaveInFlight = false;
-          rememberActiveSession();
-        }
-        /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
-        setStatus(error instanceof Error ? error.message : 'The source file could not be saved.', true);
-        return false;
+    } finally {
+      saveInFlight = false;
+    }
+  }
+
+  async function saveSnapshot({ element, html, tag, text }: QueuedSave): Promise<boolean> {
+    const marker = element.getAttribute(MARKER_ATTRIBUTE);
+    if (!marker) {
+      /* istanbul ignore else -- Missing markers are detected on the current active block. */
+      if (element === active) {
+        activeSaveInFlight = hasPendingSave(element);
+        rememberActiveSession();
       }
-    });
-    saveQueue = save.then(() => undefined);
-    return save;
+      setStatus('Missing source marker.', true);
+      return false;
+    }
+    setStatus('Saving...');
+    const controller = new AbortController();
+    const requestTimeout = window.setTimeout(() => controller.abort(), SAVE_REQUEST_TIMEOUT);
+    try {
+      const response = await fetch(options.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marker, html, text, tag }),
+        signal: controller.signal,
+      });
+      const body = await response.json() as SaveResponse;
+      /* istanbul ignore next -- The endpoint always supplies an error for rejected requests. */
+      if (!response.ok || !body.marker) throw new Error(body.error ?? 'The source file could not be saved.');
+      /* istanbul ignore else -- Unchanged DOM markers are refreshed from successful responses. */
+      if (element.getAttribute(MARKER_ATTRIBUTE) === marker) {
+        element.setAttribute(MARKER_ATTRIBUTE, body.marker);
+      }
+      /* istanbul ignore else -- An inactive block needs no active-session update. */
+      if (element === active) {
+        activeSaveInFlight = hasPendingSave(element);
+        suppressRestoredAutosave = !activeSaveInFlight && sameSnapshot(snapshot(element), { html, tag });
+        checkpoint(element, { html, tag });
+      }
+      setStatus('Saved');
+      return true;
+    } catch (error) {
+      /* istanbul ignore else -- An inactive block needs no active-session update. */
+      if (element === active) {
+        activeSaveInFlight = hasPendingSave(element);
+        rememberActiveSession();
+      }
+      /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
+      const message = controller.signal.aborted
+        ? 'Saving timed out. Try again.'
+        : error instanceof Error ? error.message : 'The source file could not be saved.';
+      setStatus(message, true);
+      return false;
+    } finally {
+      window.clearTimeout(requestTimeout);
+    }
+  }
+
+  function hasPendingSave(element: HTMLElement): boolean {
+    return pendingSaves.some((save) => save.element === element);
   }
 
   function positionToolbar(): void {
@@ -1023,6 +1304,7 @@ function decodeClientMarker(token: string | null): {
   file: string;
   start: number;
   format: 'astro' | 'frontmatter' | 'markdown';
+  original?: string;
 } | undefined {
   if (!token) return undefined;
   try {
@@ -1031,7 +1313,12 @@ function decodeClientMarker(token: string | null): {
     const value = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
     if (typeof value.file !== 'string' || typeof value.start !== 'number') return undefined;
     if (value.format !== 'astro' && value.format !== 'frontmatter' && value.format !== 'markdown') return undefined;
-    return { file: value.file, start: value.start, format: value.format };
+    return {
+      file: value.file,
+      start: value.start,
+      format: value.format,
+      original: typeof value.original === 'string' ? value.original : undefined,
+    };
   } catch {
     return undefined;
   }

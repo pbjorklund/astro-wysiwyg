@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -8,6 +8,19 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:4328',
     headless: true,
   },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'firefox',
+      testMatch: /browser-smoke\.spec\.ts/,
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit',
+      testMatch: /browser-smoke\.spec\.ts/,
+      use: { ...devices['Desktop Safari'] },
+    },
+  ],
   webServer: {
     command: 'node tests/prepare-e2e.mjs && cd .tmp/e2e-site && VITE_COVERAGE=true ../../node_modules/.bin/astro dev --host 127.0.0.1 --port 4328',
     url: 'http://127.0.0.1:4328',

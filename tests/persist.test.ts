@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -74,6 +74,116 @@ test('saves rich HTML as Markdown while preserving surrounding source', async (t
   assert.equal(beforeWriteFile, file);
   assert.equal(await readFile(file, 'utf8'), 'Before\n\nNew **bold** and _italic_ text\n\nAfter\n');
   assert.equal(decodeMarker(result.marker).original, 'New **bold** and _italic_ text');
+});
+
+test('atomically replaces source files without changing an open reader', async (t) => {
+  const source = 'Old text\n';
+  const { root, file } = await fixture(source);
+  await chmod(file, 0o664);
+  const reader = await open(file, 'r');
+  t.after(async () => {
+    await reader.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  await applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', 0, 8, 'Old text', 'markdown', 'p')),
+    html: 'New text',
+  });
+
+  assert.equal(await reader.readFile('utf8'), source);
+  assert.equal(await readFile(file, 'utf8'), 'New text\n');
+  assert.equal((await stat(file)).mode & 0o777, 0o664);
+});
+
+test('serializes overlapping edits to the same source file', async (t) => {
+  const source = 'First\n\nSecond\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const secondStart = source.indexOf('Second');
+  let releaseSecondRead!: () => void;
+  const secondRead = new Promise<void>((resolve) => { releaseSecondRead = resolve; });
+
+  const first = applySourceEdit(root, {
+    marker: encodeMarker(createMarker('page.md', 0, 5, 'First', 'markdown', 'p')),
+    html: 'Updated first',
+  }, async () => {
+    await Promise.race([
+      secondRead,
+      new Promise<void>((resolve) => setTimeout(resolve, 100)),
+    ]);
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const second = applySourceEdit(root, {
+    marker: encodeMarker(createMarker(
+      'page.md', secondStart, secondStart + 6, 'Second', 'markdown', 'p',
+    )),
+    html: 'Updated second',
+  }, releaseSecondRead);
+
+  await Promise.all([first, second]);
+
+  assert.equal(await readFile(file, 'utf8'), 'Updated first\n\nUpdated second\n');
+});
+
+test('keeps editor-entered expression delimiters literal in Astro and MDX', async (t) => {
+  const astro = await fixture('<p>Old</p>\n', '.astro');
+  const mdx = await fixture('Old\n', '.mdx');
+  const markdown = await fixture('Old\n');
+  t.after(() => Promise.all([
+    rm(astro.root, { recursive: true, force: true }),
+    rm(mdx.root, { recursive: true, force: true }),
+    rm(markdown.root, { recursive: true, force: true }),
+  ]));
+
+  await applySourceEdit(astro.root, {
+    marker: encodeMarker(createMarker('page.astro', 0, 10, '<p>Old</p>', 'astro', 'p')),
+    html: 'Hello {secret} and <code>{sample}</code><span title="{attribute}" data-label=\'{label}\'>{text}</span>',
+  });
+  await applySourceEdit(mdx.root, {
+    marker: encodeMarker(createMarker('page.mdx', 0, 3, 'Old', 'markdown', 'p')),
+    html: 'Hello {secret} and <code>{sample}</code><pre><code>{fenced}\n}</code></pre>After <code>``{ticks}``</code>, <code>a`b``c</code>, and unmatched ` {tail}',
+  });
+  await applySourceEdit(markdown.root, {
+    marker: encodeMarker(createMarker('page.md', 0, 3, 'Old', 'markdown', 'p')),
+    html: 'Hello {name}',
+  });
+
+  assert.equal(
+    await readFile(astro.file, 'utf8'),
+    '<p>Hello &#123;secret&#125; and <code>&#123;sample&#125;</code><span title="{attribute}" data-label="{label}">&#123;text&#125;</span></p>\n',
+  );
+  assert.equal(
+    await readFile(mdx.file, 'utf8'),
+    'Hello &#123;secret&#125; and `{sample}`\n\n```\n{fenced}\n}\n```\n\nAfter ` ``{ticks}`` `, ```a`b``c```, and unmatched \\` &#123;tail&#125;\n',
+  );
+  assert.equal(await readFile(markdown.file, 'utf8'), 'Hello {name}\n');
+});
+
+test('sanitizes pasted HTML before writing deployable source', async (t) => {
+  const astro = await fixture('<p>Old</p>\n', '.astro');
+  const markdown = await fixture('Old\n');
+  t.after(() => Promise.all([
+    rm(astro.root, { recursive: true, force: true }),
+    rm(markdown.root, { recursive: true, force: true }),
+  ]));
+  const pasted = '<a href="javascript:alert(1)" onclick="alert(2)">bad</a> <a href="/safe" class="link" data-id="1">safe</a> <strong style="color:red" onmouseover="alert(3)">bold</strong><img src="x" onerror="alert(4)"><script>alert(5)</script>';
+
+  await applySourceEdit(astro.root, {
+    marker: encodeMarker(createMarker('page.astro', 0, 10, '<p>Old</p>', 'astro', 'p')),
+    html: pasted,
+  });
+  await applySourceEdit(markdown.root, {
+    marker: encodeMarker(createMarker('page.md', 0, 3, 'Old', 'markdown', 'p')),
+    html: pasted,
+  });
+
+  const astroSource = await readFile(astro.file, 'utf8');
+  assert.equal(
+    astroSource,
+    '<p><a>bad</a> <a href="/safe" class="link" data-id="1">safe</a> <strong>bold</strong></p>\n',
+  );
+  assert.equal(await readFile(markdown.file, 'utf8'), 'bad [safe](/safe) **bold**\n');
 });
 
 test('keeps marker coordinates stable when rendered positions exclude frontmatter', async (t) => {
@@ -244,17 +354,22 @@ test('rejects paths outside the project root', async (t) => {
 
 test('rejects unsupported, missing, stale, and ambiguous source targets', async (t) => {
   const unsupported = await fixture('text', '.txt');
+  const unsupportedMarkdoc = await fixture('text', '.mdoc');
   const missingRoot = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-'));
   const ambiguous = await fixture('Same\n\nSame\n');
   t.after(() => Promise.all([
     rm(unsupported.root, { recursive: true, force: true }),
+    rm(unsupportedMarkdoc.root, { recursive: true, force: true }),
     rm(missingRoot, { recursive: true, force: true }),
     rm(ambiguous.root, { recursive: true, force: true }),
   ]));
 
-  await assert.rejects(
-    applySourceEdit(unsupported.root, {
-      marker: encodeMarker(createMarker('page.txt', 0, 4, 'text', 'markdown', 'p')),
+  for (const [target, file] of [
+    [unsupported, 'page.txt'],
+    [unsupportedMarkdoc, 'page.mdoc'],
+  ] as const) await assert.rejects(
+    applySourceEdit(target.root, {
+      marker: encodeMarker(createMarker(file, 0, 4, 'text', 'markdown', 'p')),
       html: 'changed',
     }),
     /file type cannot be edited/,

@@ -1,10 +1,10 @@
 import path from 'node:path';
+import { MARKDOWN_EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
 import { createMarker, encodeMarker } from './marker.ts';
 
-const BLOCK_TAGS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li']);
-const INLINE_TAGS = new Set([
-  'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
-  'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
+const BLOCK_TAGS = new Set(MARKDOWN_EDITABLE_BLOCK_TAGS);
+const TURNDOWN_INLINE_TAGS = new Set([
+  'a', 'b', 'br', 'code', 'em', 'i', 'li', 'p', 'strong',
 ]);
 
 interface HastPosition {
@@ -41,7 +41,7 @@ export function rehypeEditableBlocks(options: RehypeEditableOptions) {
       const start = node.position?.start?.offset;
       const end = node.position?.end?.offset;
       if (!tag || !BLOCK_TAGS.has(tag) || start === undefined || end === undefined) return false;
-      if (!(node.children ?? []).every(isStaticInlineNode)) return false;
+      if (!(node.children ?? []).every((child) => isRoundTripSafeInlineNode(child, source))) return false;
       const original = source.slice(start, end);
       if (!original) return false;
 
@@ -64,8 +64,19 @@ function visit(node: HastNode, callback: (node: HastNode) => boolean | void): vo
   for (const child of node.children ?? []) visit(child, callback);
 }
 
-function isStaticInlineNode(node: HastNode): boolean {
+function isRoundTripSafeInlineNode(node: HastNode, source: string): boolean {
   if (node.type === 'text') return true;
-  if (node.type !== 'element' || !node.tagName || !INLINE_TAGS.has(node.tagName.toLowerCase())) return false;
-  return (node.children ?? []).every(isStaticInlineNode);
+  if (node.type !== 'element' || !node.tagName) return false;
+  const tag = node.tagName.toLowerCase();
+  if (!TURNDOWN_INLINE_TAGS.has(tag)) return false;
+  if (tag === 'a' && !isRoundTripSafeLink(node, source)) return false;
+  return (node.children ?? []).every((child) => isRoundTripSafeInlineNode(child, source));
+}
+
+function isRoundTripSafeLink(node: HastNode, source: string): boolean {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
+  if (start === undefined || end === undefined) return false;
+  const original = source.slice(start, end);
+  return !original.startsWith('[') || original.includes('](');
 }

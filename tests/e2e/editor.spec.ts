@@ -99,6 +99,151 @@ test('edits article frontmatter from the Astro dev-toolbar app without selecting
   await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('aiDisclaimer: true');
 });
 
+test('keeps the frontmatter panel open when a submitted field changed on disk', async ({ page }) => {
+  let submitted: Record<string, unknown> | undefined;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    if (body.frontmatter !== 'update') return route.continue();
+    submitted = body;
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: 'The title frontmatter field changed on disk. Close and reopen the frontmatter editor before saving again.',
+      }),
+    });
+  });
+  await page.goto('/article');
+  await page.getByRole('button', { name: 'Page editor' }).click();
+  await page.getByRole('button', { name: 'Edit frontmatter' }).click();
+  const dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
+  await dialog.getByRole('textbox', { name: 'title' }).fill('Editor title');
+  await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
+
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'The title frontmatter field changed on disk. Close and reopen the frontmatter editor before saving again.',
+  );
+  expect(submitted).toEqual({
+    frontmatter: 'update',
+    contextMarker: expect.any(String),
+    changes: { title: { value: 'Editor title', original: 'Markdown fixture' } },
+  });
+});
+
+test('restores unsaved frontmatter after navigation and reload until it is saved', async ({ page }) => {
+  let submittedChanges: Record<string, { original: string; value: string | boolean }> | undefined;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    const body = route.request().postDataJSON() as {
+      frontmatter?: string;
+      changes?: Record<string, { original: string; value: string | boolean }>;
+    };
+    if (body.frontmatter === 'update') submittedChanges = body.changes;
+    await route.continue();
+  });
+  await page.goto('/article');
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
+  let dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
+  await dialog.getByRole('textbox', { name: 'title' }).fill('Recovered frontmatter');
+  await dialog.getByRole('textbox', { name: 'tags' }).fill('draft, recovered');
+  await dialog.getByRole('checkbox', { name: 'aiDisclaimer' }).check();
+
+  await page.goto('/');
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' })).not.toBeVisible();
+  await page.goto('/article');
+  dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('alert')).toHaveText('Restored unsaved frontmatter changes.');
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toHaveValue('Recovered frontmatter');
+  await expect(dialog.getByRole('textbox', { name: 'tags' })).toHaveValue('draft, recovered');
+  await expect(dialog.getByRole('checkbox', { name: 'aiDisclaimer' })).toBeChecked();
+
+  await page.reload();
+  dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toHaveValue('Recovered frontmatter');
+  await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
+  await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Recovered frontmatter');
+  expect(submittedChanges).toEqual({
+    title: { value: 'Recovered frontmatter', original: 'Markdown fixture' },
+    tags: { value: 'draft, recovered', original: '["astro", "markdown"]' },
+    aiDisclaimer: { value: true, original: 'false' },
+  });
+
+  await page.reload();
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' })).not.toBeVisible();
+});
+
+test('discards frontmatter drafts on cancel and tolerates unavailable session storage', async ({ page }) => {
+  await page.goto('/article');
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
+  let dialog = editor.getByRole('dialog', { name: 'Edit frontmatter' });
+  const title = dialog.getByRole('textbox', { name: 'title' });
+  await title.fill('Discard this draft');
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft')))
+    .not.toBeNull();
+  await title.fill('Markdown fixture');
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft')))
+    .toBeNull();
+  await title.fill('Discard this draft');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await page.reload();
+  await expect(editor.getByRole('dialog', { name: 'Edit frontmatter' })).not.toBeVisible();
+
+  for (const stored of [
+    '{',
+    '1',
+    JSON.stringify({ pathname: '/other', contextMarker: 'marker', changes: {} }),
+    JSON.stringify({ pathname: '/article' }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker' }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker', changes: [] }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker', changes: { title: null } }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker', changes: { title: [] } }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker', changes: { title: { original: 1, value: 'x' } } }),
+    JSON.stringify({ pathname: '/article', contextMarker: 'marker', changes: { title: { original: 'old', value: 1 } } }),
+  ]) {
+    await page.evaluate((value) => {
+      sessionStorage.setItem('astro-wysiwyg-frontmatter-draft', value);
+    }, stored);
+    await page.reload();
+    await expect(editor.getByRole('dialog', { name: 'Edit frontmatter' })).not.toBeVisible();
+  }
+
+  const contextMarker = await page.locator('[data-astro-wysiwyg]').first().getAttribute('data-astro-wysiwyg');
+  await page.evaluate(({ marker }) => {
+    sessionStorage.setItem('astro-wysiwyg-frontmatter-draft', JSON.stringify({
+      pathname: '/article',
+      contextMarker: marker,
+      changes: { title: { original: 'Markdown fixture', value: true } },
+    }));
+  }, { marker: contextMarker });
+  await page.reload();
+  dialog = editor.getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog.getByRole('alert')).toHaveText('The unsaved frontmatter fields are no longer available.');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter'));
+  });
+  dialog = editor.getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };
+  });
+  await dialog.getByRole('textbox', { name: 'title' }).fill('Unsaved without storage');
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toHaveValue('Unsaved without storage');
+  await page.evaluate(() => {
+    Storage.prototype.removeItem = () => { throw new Error('Storage unavailable'); };
+  });
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).not.toBeVisible();
+});
+
 test('queues continued Markdown edits behind an in-flight save', async ({ page }) => {
   let saveRequests = 0;
   await page.route('**/_astro-wysiwyg/save', async (route) => {
@@ -128,6 +273,56 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
 
   await expect.poll(async () => readFile(queueFile, 'utf8')).toContain('Markdown **saved**');
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+});
+
+test('coalesces queued snapshots to the latest edit while a save is in flight', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/queue');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  let releaseResponse: () => void = () => undefined;
+  let requestStarted: () => void = () => undefined;
+  const release = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+  const requests: Array<{ html: string; marker: string }> = [];
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    const request = route.request().postDataJSON() as { html: string; marker: string };
+    requests.push(request);
+    if (requests.length === 1) {
+      requestStarted();
+      await release;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ marker: request.marker }),
+    });
+  });
+  const save = page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Save' });
+  const changeTo = async (text: string) => {
+    await paragraph.evaluate((element, value) => {
+      element.textContent = value;
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    }, text);
+    await save.click();
+  };
+
+  await changeTo('First snapshot');
+  await started;
+  await changeTo('Second snapshot');
+  await changeTo('Third snapshot');
+  await changeTo('Latest snapshot');
+  releaseResponse();
+  await page.waitForTimeout(300);
+
+  expect(requests.map(({ html }) => html)).toEqual(['First snapshot', 'Latest snapshot']);
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText('Saved');
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}'));
+  expect(session.saving).toBe(false);
 });
 
 test('handles invalid, missing, and tag-changing active sessions', async ({ page }) => {
@@ -210,32 +405,174 @@ test('restores sessions with invalid source locations and oversized carets', asy
   await expect(first).not.toHaveAttribute('contenteditable', 'true');
 });
 
-test('does not resave an in-flight edit restored after an Astro reload', async ({ page }) => {
+test('does not repeat an in-flight save already reflected after reload', async ({ page }) => {
   await page.goto('/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
-  const session = await page.evaluate(() => {
+  await page.evaluate(() => {
+    const key = 'astro-wysiwyg-active';
+    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    value.sourceOriginal = 'Source before the committed save';
+    value.saving = true;
+    sessionStorage.setItem(key, JSON.stringify(value));
+  });
+  let saveRequests = 0;
+  await page.route('**/_astro-wysiwyg/save', (route) => {
+    saveRequests += 1;
+    return route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Unexpected repeat save.' }),
+    });
+  });
+
+  await page.reload();
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  await page.waitForTimeout(700);
+
+  expect(saveRequests).toBe(0);
+});
+
+test('retries an in-flight save when its original source is unchanged after reload', async ({ page }) => {
+  await page.goto('/pending');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  const token = await paragraph.getAttribute('data-astro-wysiwyg');
+  const sourceOriginal = JSON.parse(Buffer.from(token!, 'base64url').toString('utf8')).original;
+  const storedSourceOriginal = await page.evaluate(() => {
+    const value = JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}');
+    return value.sourceOriginal;
+  });
+  expect(storedSourceOriginal).toBe(sourceOriginal);
+  await page.evaluate(() => {
     const key = 'astro-wysiwyg-active';
     const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
     value.html = `${value.html} <em>pending</em>`;
     value.saving = true;
     sessionStorage.setItem(key, JSON.stringify(value));
-    return value;
   });
   let saveRequests = 0;
-  await page.route('**/_astro-wysiwyg/save', async (route) => {
+  await page.route('**/_astro-wysiwyg/save', (route) => {
     saveRequests += 1;
-    await route.fulfill({
-      status: 200,
+    return route.fulfill({
+      status: 500,
       contentType: 'application/json',
-      body: JSON.stringify({ marker: sessionStorageMarker(session) }),
+      body: JSON.stringify({ error: 'Restored save retried.' }),
     });
   });
 
   await page.reload();
   await expect(paragraph).toContainText('pending');
-  await page.waitForTimeout(700);
+  await expect.poll(() => saveRequests).toBe(1);
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText('Restored save retried.');
+});
 
+test('preserves a debounce-window draft when source changed before reload', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/pending');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await paragraph.press('End');
+  await paragraph.pressSequentially(' debounce draft');
+  const dirty = await page.evaluate(() => {
+    const session = JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}');
+    return session.dirty;
+  });
+  expect(dirty).toBe(true);
+  await page.evaluate(() => {
+    const sourceOriginal = 'Source before an external change';
+    const paragraph = document.querySelector<HTMLElement>('main > p');
+    const token = paragraph?.getAttribute('data-astro-wysiwyg');
+    if (!paragraph || !token) throw new Error('Missing source marker.');
+    const marker = JSON.parse(atob(token.replace(/-/g, '+').replace(/_/g, '/')));
+    marker.original = sourceOriginal;
+    paragraph.setAttribute(
+      'data-astro-wysiwyg',
+      btoa(JSON.stringify(marker)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''),
+    );
+    const key = 'astro-wysiwyg-active';
+    const session = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    session.sourceOriginal = sourceOriginal;
+    session.saving = false;
+    sessionStorage.setItem(key, JSON.stringify(session));
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: true, highlights: true,
+    }));
+  });
+  let saveRequests = 0;
+  await page.route('**/_astro-wysiwyg/save', (route) => {
+    saveRequests += 1;
+    return route.abort();
+  });
+
+  await page.reload();
+  await expect(paragraph).toContainText('debounce draft');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}')))
+    .toMatchObject({ dirty: true, suppressAutosave: true });
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText(
+    'The source changed since this draft began. Review this block before saving again.',
+  );
+  await page.waitForTimeout(700);
+  expect(saveRequests).toBe(0);
+});
+
+test('does not replay stale HTML from a clean session when source changed', async ({ page }) => {
+  await page.goto('/pending');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  const cleanSession = await page.evaluate(() => (
+    JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}')
+  ));
+  expect(cleanSession.dirty).toBe(false);
+  await paragraph.press('Escape');
+  await page.evaluate((session) => {
+    session.dirty = false;
+    session.saving = false;
+    session.sourceOriginal = 'Source before an external change';
+    session.html = 'Stale clean session HTML';
+    sessionStorage.setItem('astro-wysiwyg-active', JSON.stringify(session));
+  }, cleanSession);
+  let saveRequests = 0;
+  await page.route('**/_astro-wysiwyg/save', (route) => {
+    saveRequests += 1;
+    return route.abort();
+  });
+
+  await page.reload();
+  await expect(paragraph).not.toContainText('Stale clean session HTML');
+  await expect(paragraph).toContainText('Keep this pending edit stable across an Astro reload.');
+  await page.waitForTimeout(700);
+  expect(saveRequests).toBe(0);
+});
+
+test('preserves an in-flight draft without overwriting conflicting source after reload', async ({ page }) => {
+  await page.goto('/pending');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await page.evaluate(() => {
+    const key = 'astro-wysiwyg-active';
+    const value = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    value.sourceOriginal = 'Source before an external change';
+    value.html = `${value.html} <em>pending</em>`;
+    value.saving = true;
+    sessionStorage.setItem(key, JSON.stringify(value));
+  });
+  let saveRequests = 0;
+  await page.route('**/_astro-wysiwyg/save', (route) => {
+    saveRequests += 1;
+    return route.abort();
+  });
+
+  await page.reload();
+  await expect(paragraph).toContainText('pending');
+  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText(
+    'The source changed since this draft began. Review this block before saving again.',
+  );
+  await page.waitForTimeout(700);
   expect(saveRequests).toBe(0);
 });
 
@@ -257,6 +594,95 @@ test('keeps editing active when Done cannot save', async ({ page }) => {
 
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
   await expect(toolbar.getByRole('status')).toHaveText('Simulated save failure.');
+});
+
+test('times out a stalled save without blocking the next attempt', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/save-failure');
+  await page.clock.install();
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await paragraph.evaluate((element) => {
+    element.textContent += ' waiting';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+  let releaseResponse: () => void = () => undefined;
+  let requestStarted: () => void = () => undefined;
+  const release = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+  let requests = 0;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    requests += 1;
+    if (requests === 1) {
+      requestStarted();
+      await release;
+      await route.abort().catch(() => undefined);
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Retry reached the server.' }),
+    });
+  });
+
+  try {
+    const toolbar = page.locator('#astro-wysiwyg-toolbar');
+    await toolbar.getByRole('button', { name: 'Done' }).click();
+    await started;
+    await page.clock.fastForward(10_001);
+
+    await expect(toolbar.getByRole('status')).toHaveText('Saving timed out. Try again.', { timeout: 500 });
+    await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+    const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}'));
+    expect(session.saving).toBe(false);
+    expect(session.dirty).toBe(true);
+    expect(session.html).toContain('waiting');
+
+    await toolbar.getByRole('button', { name: 'Save' }).click();
+    await expect(toolbar.getByRole('status')).toHaveText('Retry reached the server.');
+    expect(requests).toBe(2);
+  } finally {
+    releaseResponse();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
+test('keeps the previous block recoverable when switching blocks cannot save', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/guards');
+  const paragraphs = page.locator('main > p');
+  const first = paragraphs.first();
+  const second = paragraphs.nth(1);
+  await first.click();
+  await first.evaluate((element) => {
+    element.textContent += ' unsaved';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+  await page.route('**/_astro-wysiwyg/save', (route) => route.fulfill({
+    status: 500,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'Switch save failed.' }),
+  }));
+
+  await second.evaluate((element) => element.click());
+
+  const toolbar = page.locator('#astro-wysiwyg-toolbar');
+  await expect(toolbar.getByRole('status')).toHaveText('Switch save failed.');
+  await expect(first).toHaveAttribute('contenteditable', 'true');
+  await expect(first).toHaveAttribute('data-astro-wysiwyg-active', '');
+  await expect(second).not.toHaveAttribute('contenteditable', 'true');
+  await expect(first).toBeFocused();
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}'));
+  expect(session.html).toContain('unsaved');
 });
 
 test('keeps editing active when content changes while Done is saving', async ({ page }) => {
@@ -335,6 +761,115 @@ function sessionStorageMarker(session: { file?: string; start?: number }): strin
   return Buffer.from(JSON.stringify(marker)).toString('base64url');
 }
 
+test('announces keyboard editing without replacing source block semantics', async ({ page }) => {
+  await page.goto('/');
+  const heading = page.getByRole('heading', { name: 'Editable Astro page' });
+  await expect(heading).not.toHaveAttribute('role');
+  await expect(heading).toHaveAttribute('aria-describedby', 'astro-wysiwyg-edit-instructions');
+  await expect(page.locator('#astro-wysiwyg-edit-instructions')).toHaveText(
+    'Editable source content. Press Enter to edit. Press Alt+Up or Alt+Down to move between editable blocks.',
+  );
+
+  const cdp = await page.context().newCDPSession(page);
+  const { root } = await cdp.send('DOM.getDocument');
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: 'main > h1' });
+  const { nodes } = await cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
+  const accessibleHeading = nodes.find((node) => !node.ignored);
+  expect(accessibleHeading?.role?.value).toBe('heading');
+  expect(accessibleHeading?.name?.value).toBe('Editable Astro page');
+  expect(accessibleHeading?.description?.value).toBe(
+    'Editable source content. Press Enter to edit. Press Alt+Up or Alt+Down to move between editable blocks.',
+  );
+  await cdp.detach();
+
+  await heading.press('Enter');
+  await expect(heading).not.toHaveAttribute('aria-describedby');
+  await heading.press('Escape');
+  await expect(heading).toHaveAttribute('aria-describedby', 'astro-wysiwyg-edit-instructions');
+
+  await page.evaluate(() => {
+    const authorDescription = document.createElement('span');
+    authorDescription.id = 'author-description';
+    authorDescription.hidden = true;
+    authorDescription.textContent = 'Author description.';
+    document.body.append(authorDescription);
+    const sourceHeading = document.querySelector('main > h1')!;
+    sourceHeading.setAttribute(
+      'aria-describedby',
+      `author-description ${sourceHeading.getAttribute('aria-describedby')}`,
+    );
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: false, autosave: true, highlights: true },
+    }));
+  });
+  await expect(heading).toHaveAttribute('aria-describedby', 'author-description');
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: true, autosave: true, highlights: true },
+    }));
+  });
+  await expect(heading).toHaveAttribute(
+    'aria-describedby',
+    'author-description astro-wysiwyg-edit-instructions',
+  );
+});
+
+test('uses one roving tab stop for long-page editable blocks', async ({ page }) => {
+  await page.goto('/focus-order');
+  const paragraphs = page.locator('main > p');
+  await expect(paragraphs).toHaveCount(8);
+  await expect(page.locator('main > p[tabindex="0"]')).toHaveCount(1);
+  await expect(page.locator('main > p[tabindex="-1"]')).toHaveCount(6);
+  await expect(paragraphs.nth(3)).toHaveAttribute('tabindex', '4');
+
+  await paragraphs.first().focus();
+  await paragraphs.first().press('Alt+ArrowDown');
+  await expect(paragraphs.nth(1)).toBeFocused();
+  await expect(paragraphs.first()).toHaveAttribute('tabindex', '-1');
+  await expect(paragraphs.nth(1)).toHaveAttribute('tabindex', '0');
+  await paragraphs.nth(1).press('Alt+ArrowDown');
+  await expect(paragraphs.nth(2)).toBeFocused();
+  await paragraphs.nth(2).press('Alt+ArrowDown');
+  await expect(paragraphs.nth(3)).toBeFocused();
+  await expect(paragraphs.nth(3)).toHaveAttribute('tabindex', '4');
+  await paragraphs.nth(3).press('Alt+ArrowDown');
+  await expect(paragraphs.nth(4)).toBeFocused();
+  await expect(paragraphs.nth(4)).toHaveAttribute('tabindex', '0');
+  await paragraphs.first().focus();
+  await paragraphs.first().press('Alt+ArrowDown');
+  await paragraphs.nth(1).press('Alt+ArrowUp');
+  await expect(paragraphs.first()).toBeFocused();
+  await paragraphs.first().press('Alt+ArrowUp');
+  await expect(paragraphs.last()).toBeFocused();
+  await paragraphs.last().press('Tab');
+  await expect(page.getByRole('link', { name: 'After editable blocks' })).toBeFocused();
+
+  await paragraphs.nth(4).click();
+  await expect(paragraphs.nth(4)).toHaveAttribute('contenteditable', 'true');
+  await expect(paragraphs.nth(4)).toHaveAttribute('tabindex', '0');
+  await expect(page.locator('main > p[tabindex="0"]')).toHaveCount(1);
+  await paragraphs.nth(4).press('Escape');
+  await paragraphs.nth(4).press('Tab');
+  await expect(page.getByRole('link', { name: 'After editable blocks' })).toBeFocused();
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: false, autosave: true, highlights: true },
+    }));
+  });
+  await expect(page.locator('main > p[data-wysiwyg-added-tabindex]')).toHaveCount(0);
+  await expect(paragraphs.nth(3)).toHaveAttribute('tabindex', '4');
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: true, autosave: true, highlights: true },
+    }));
+  });
+  await expect(page.locator('main > p[tabindex="0"]')).toHaveCount(1);
+  await expect(page.locator('main > p[tabindex="-1"]')).toHaveCount(6);
+  await expect(paragraphs.nth(3)).toHaveAttribute('tabindex', '4');
+});
+
 test('supports keyboard activation, formatting, lists, toolbar focus, save, and finish', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
@@ -374,6 +909,44 @@ test('ignores non-editor events and storage failures without stopping editing', 
   await paragraph.click();
   await paragraph.pressSequentially(' still editable');
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+});
+
+test('preserves one editor instance across ClientRouter document swaps', async ({ page }) => {
+  await page.goto('/router-one');
+  const host = page.locator('#astro-wysiwyg-toolbar');
+  await host.evaluate((element) => { element.dataset.instance = 'original'; });
+  const firstParagraph = page.getByText('First routed block.');
+  await firstParagraph.click();
+  await expect(firstParagraph).toHaveAttribute('contenteditable', 'true');
+  await expect(host.getByRole('toolbar', { name: 'Edit text' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Open router page two' }).click();
+  await expect(page).toHaveURL(/\/router-two$/);
+  await expect(page.getByRole('heading', { name: 'Router page two' })).toBeVisible();
+  await expect(host).toHaveCount(1);
+  await expect(host).toHaveAttribute('data-instance', 'original');
+  await expect(page.locator('#astro-wysiwyg-edit-instructions')).toHaveCount(1);
+  await expect(page.locator('style[data-astro-wysiwyg-style]')).toHaveCount(1);
+  await expect(page.locator('html')).toHaveAttribute('data-astro-wysiwyg-enabled', '');
+
+  let sourceLookups = 0;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    sourceLookups += 1;
+    await route.continue();
+  });
+  const paragraph = page.getByText('Second routed block.');
+  await expect(paragraph).toHaveAttribute('data-wysiwyg-source-file', /.+/);
+  await paragraph.evaluate((element) => element.removeAttribute('data-astro-wysiwyg'));
+  await paragraph.click();
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  expect(sourceLookups).toBe(1);
+
+  await page.getByRole('link', { name: 'Return to router page one' }).click();
+  await expect(page).toHaveURL(/\/router-one$/);
+  await expect(host).toHaveCount(1);
+  await expect(host).toHaveAttribute('data-instance', 'original');
+  await expect(page.locator('#astro-wysiwyg-edit-instructions')).toHaveCount(1);
+  await expect(page.locator('style[data-astro-wysiwyg-style]')).toHaveCount(1);
 });
 
 test('handles duplicate setup, page events, open panels, block switches, and disabling while active', async ({ page }) => {
@@ -561,6 +1134,42 @@ test('rejects failed and aborted dynamic source-marker lookups', async ({ page }
   await expect(blocks.nth(1)).not.toHaveAttribute('contenteditable', 'true');
 });
 
+test('edits interactive Astro text without triggering its native or application action', async ({ page }) => {
+  await page.goto('/interactive');
+  await page.evaluate(() => {
+    document.body.dataset.interactiveActions = '0';
+    const recordAction = (event: Event) => {
+      if (event.type === 'submit') event.preventDefault();
+      document.body.dataset.interactiveActions = String(
+        Number(document.body.dataset.interactiveActions) + 1,
+      );
+    };
+    document.querySelector('button')?.addEventListener('click', recordAction);
+    document.querySelector('form')?.addEventListener('submit', recordAction);
+    document.querySelector('label')?.addEventListener('click', recordAction);
+    document.querySelector('summary')?.addEventListener('click', recordAction);
+  });
+
+  const button = page.locator('main button');
+  await button.click();
+  await expect(button).toHaveAttribute('contenteditable', 'true');
+  await expect(page.locator('body')).toHaveAttribute('data-interactive-actions', '0');
+  await button.press('Escape');
+
+  const label = page.locator('main label');
+  await label.click();
+  await expect(label).toHaveAttribute('contenteditable', 'true');
+  await expect(page.locator('#editable-checkbox')).not.toBeChecked();
+  await expect(page.locator('body')).toHaveAttribute('data-interactive-actions', '0');
+  await label.press('Escape');
+
+  const summary = page.locator('main summary');
+  await summary.click();
+  await expect(summary).toHaveAttribute('contenteditable', 'true');
+  await expect(page.locator('details')).not.toHaveAttribute('open', '');
+  await expect(page.locator('body')).toHaveAttribute('data-interactive-actions', '0');
+});
+
 test('maps marked list items back to their editable parent list', async ({ page }) => {
   await page.goto('/multi-list');
   const list = page.locator('main > ul');
@@ -699,6 +1308,7 @@ test('reports frontmatter context, load, and save errors', async ({ page }) => {
   await expect(dialog.getByRole('alert')).toHaveText('Save failed.');
   await dialog.press('Escape');
   await expect(dialog).not.toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft'))).toBeNull();
   await page.getByRole('button', { name: 'Page editor' }).click();
   await page.getByRole('button', { name: 'Edit frontmatter' }).click();
   await dialog.getByRole('button', { name: 'Save frontmatter' }).click();

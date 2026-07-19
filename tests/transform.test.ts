@@ -25,6 +25,31 @@ test('annotates static Astro blocks without changing their source range', async 
   assert.equal(source.slice(marker.start, marker.end), marker.original);
 });
 
+test('rejects nested inline elements with source-dynamic attributes', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-attributes-'));
+  const file = path.join(root, 'page.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  for (const source of [
+    '<p>Read <a href={url}>this link</a></p>',
+    '<p><span class:list={{ active }}>Styled text</span></p>',
+    '<p><span class:list="active">Static directive text</span></p>',
+    '<p><span {...props}>Spread text</span></p>',
+    '<p><span {title}>Titled text</span></p>',
+    '<p><span set:html={html}></span></p>',
+    '<p><data value={`prefix-${value}`}>Value</data></p>',
+  ]) {
+    await writeFile(file, source);
+    assert.equal(await annotateAstroSource(source, file, root), null);
+    await assert.rejects(resolveAstroSourceMarker(root, file, '1:2'), /not a static editable block/);
+  }
+
+  const staticSource = '<p>Read <a href="/docs" title>the docs</a></p>';
+  await writeFile(file, staticSource);
+  assert.match(await annotateAstroSource(staticSource, file, root) ?? '', /data-astro-wysiwyg=/);
+  assert.equal(decodeMarker(await resolveAstroSourceMarker(root, file, '1:2')).original, staticSource);
+});
+
 test('resolves Astro dev source locations to safe static blocks', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-resolve-'));
   const file = path.join(root, 'page.astro');
@@ -103,6 +128,40 @@ test('resolves a rendered article card through its linked content slug', async (
   assert.equal(decodeMarker(singular).file, 'src/content/articles/example/index.md');
 });
 
+test('uses the clicked link instead of an unrelated document context marker', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-context-priority-'));
+  const pageFile = path.join(root, 'src/components/Card.astro');
+  const linkedFile = path.join(root, 'src/content/articles/linked/index.md');
+  const contextFile = path.join(root, 'src/content/articles/current.md');
+  await Promise.all([
+    mkdir(path.dirname(pageFile), { recursive: true }),
+    mkdir(path.dirname(linkedFile), { recursive: true }),
+  ]);
+  await writeFile(pageFile, '<a href="/articles/linked"><h2>{article.data.title}</h2></a>');
+  await writeFile(linkedFile, '---\ntitle: "Shared title"\n---\nLinked body\n');
+  await writeFile(contextFile, '---\ntitle: "Shared title"\n---\nCurrent body\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const contextMarker = encodeMarker(createMarker(
+    'src/content/articles/current.md', 0, 0, '', 'markdown', 'p',
+  ));
+
+  const token = await resolveAstroSourceMarker(root, pageFile, '1:41', {
+    contextMarker,
+    contextHref: '/articles/linked',
+    renderedText: 'Shared title',
+  });
+  assert.equal(decodeMarker(token).file, 'src/content/articles/linked/index.md');
+
+  await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:41', {
+      contextMarker,
+      contextHref: '/articles/missing',
+      renderedText: 'Shared title',
+    }),
+    /No linked content frontmatter/,
+  );
+});
+
 test('rejects unsafe Astro source files and invalid locations', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-resolve-'));
   const outside = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-outside-'));
@@ -126,15 +185,18 @@ test('rejects unsafe Astro source files and invalid locations', async (t) => {
 test('rejects unresolved linked and contextual frontmatter', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-context-'));
   const pageFile = path.join(root, 'page.astro');
+  const markdocFile = path.join(root, 'src/content/articles/markdoc/index.mdoc');
+  await mkdir(path.dirname(markdocFile), { recursive: true });
   await writeFile(pageFile, '<h1>{article.data.title}</h1>');
+  await writeFile(markdocFile, '---\ntitle: Title\n---\n');
   t.after(() => rm(root, { recursive: true, force: true }));
 
   await assert.rejects(
     resolveAstroSourceMarker(root, pageFile, '1:10', { contextHref: '/', renderedText: 'Title' }),
     /could not be identified/,
   );
-  await assert.rejects(
-    resolveAstroSourceMarker(root, pageFile, '1:10', { contextHref: '/articles/missing', renderedText: 'Title' }),
+  for (const contextHref of ['/articles/missing', '/articles/markdoc']) await assert.rejects(
+    resolveAstroSourceMarker(root, pageFile, '1:10', { contextHref, renderedText: 'Title' }),
     /No linked content frontmatter/,
   );
   const astroContext = encodeMarker(createMarker('page.astro', 0, 1, '<', 'astro', 'p'));
@@ -155,6 +217,7 @@ test('validates contextual frontmatter files and rendered values', async (t) => 
   const cases = [
     ['outside', '../outside.md', '', /outside/],
     ['extension', 'content.txt', '---\ntitle: Title\n---\n', /no editable frontmatter/],
+    ['markdoc', 'content.mdoc', '---\ntitle: Title\n---\n', /no editable frontmatter/],
     ['frontmatter', 'plain.md', 'Body', /no editable frontmatter/],
     ['field', 'missing.md', '---\ndescription: Text\n---\n', /field was not found/],
     ['mismatch', 'mismatch.md', '---\ntitle: Other\n---\n', /does not match/],
@@ -295,6 +358,66 @@ test('skips unsafe and incomplete Markdown nodes while creating missing properti
 
   assert.ok(paragraph.properties);
   assert.match(String(paragraph.properties['data-astro-wysiwyg']), /.+/);
+});
+
+test('skips Markdown constructs that Turndown cannot round-trip safely', () => {
+  const source = 'Footnote[^1].\n\n[^1]: Footnote text.\n\nSee [guide][docs].\n\nSafe [link](/docs) and **bold**.\n';
+  const footnoteReference = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: 13 } },
+    children: [
+      { type: 'text', value: 'Footnote' },
+      { type: 'element', tagName: 'sup', properties: {}, children: [{
+        type: 'element', tagName: 'a', properties: { dataFootnoteRef: true },
+        position: { start: { offset: 8 }, end: { offset: 12 } },
+        children: [{ type: 'text', value: '1' }],
+      }] },
+      { type: 'text', value: '.' },
+    ],
+  };
+  const definitionStart = source.indexOf('Footnote text.');
+  const footnoteDefinition = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: definitionStart }, end: { offset: definitionStart + 14 } },
+    children: [
+      { type: 'text', value: 'Footnote text. ' },
+      { type: 'element', tagName: 'a', properties: { dataFootnoteBackref: '' }, children: [{ type: 'text', value: '↩' }] },
+    ],
+  };
+  const referenceStart = source.indexOf('See [guide][docs].');
+  const referenceLink = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: referenceStart }, end: { offset: referenceStart + 18 } },
+    children: [
+      { type: 'text', value: 'See ' },
+      { type: 'element', tagName: 'a', properties: { href: '/docs' },
+        position: { start: { offset: referenceStart + 4 }, end: { offset: referenceStart + 17 } },
+        children: [{ type: 'text', value: 'guide' }] },
+      { type: 'text', value: '.' },
+    ],
+  };
+  const safeStart = source.indexOf('Safe [link](/docs) and **bold**.');
+  const safe = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: safeStart }, end: { offset: source.length - 1 } },
+    children: [
+      { type: 'text', value: 'Safe ' },
+      { type: 'element', tagName: 'a', properties: { href: '/docs' },
+        position: { start: { offset: safeStart + 5 }, end: { offset: safeStart + 18 } },
+        children: [{ type: 'text', value: 'link' }] },
+      { type: 'text', value: ' and ' },
+      { type: 'element', tagName: 'strong', properties: {}, children: [{ type: 'text', value: 'bold' }] },
+      { type: 'text', value: '.' },
+    ],
+  };
+  const tree = { type: 'root', children: [footnoteReference, footnoteDefinition, referenceLink, safe] };
+
+  rehypeEditableBlocks({ root: '/project' })(tree, { path: '/project/page.md', value: source });
+
+  assert.equal(footnoteReference.properties['data-astro-wysiwyg'], undefined);
+  assert.equal(footnoteDefinition.properties['data-astro-wysiwyg'], undefined);
+  assert.equal(referenceLink.properties['data-astro-wysiwyg'], undefined);
+  assert.match(String(safe.properties['data-astro-wysiwyg']), /.+/);
 });
 
 test('does not annotate Markdown blocks containing MDX components', () => {

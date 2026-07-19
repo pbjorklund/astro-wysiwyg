@@ -23,6 +23,23 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm pack --dry-run
 
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: mkdir -p .tmp/package && npm pack --ignore-scripts --pack-destination .tmp/package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.17.1
+      - run: node tests/compatibility.mjs .tmp/package/astro-wysiwyg-*.tgz 5.0.0
+
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -33,5 +50,5 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium firefox webkit
       - run: npm run check

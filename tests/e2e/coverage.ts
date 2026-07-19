@@ -1,6 +1,7 @@
 import { expect, test as base } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { resetE2eSource } from '../reset-e2e-source.mjs';
 
 interface IstanbulFileCoverage {
   path: string;
@@ -38,7 +39,15 @@ function mergeCoverage(target: IstanbulCoverage, source: IstanbulCoverage | unde
   return target;
 }
 
-export const test = base.extend<{ coverageCollector: void }>({
+export const test = base.extend<{ coverageCollector: void; sourceFixtureReset: void }>({
+  sourceFixtureReset: [async ({}, use) => {
+    await resetSourceAndSettle();
+    try {
+      await use();
+    } finally {
+      await resetSourceAndSettle();
+    }
+  }, { auto: true }],
   coverageCollector: [async ({ page }, use, testInfo) => {
     await page.addInitScript(() => {
       const merge = (target: IstanbulCoverage, source: IstanbulCoverage | undefined): IstanbulCoverage => {
@@ -81,9 +90,18 @@ export const test = base.extend<{ coverageCollector: void }>({
     if (Object.keys(merged).length === 0) return;
     const directory = path.resolve('.coverage/browser');
     await mkdir(directory, { recursive: true });
+    const safeProject = testInfo.project.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
     const safeTitle = testInfo.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
-    await writeFile(path.join(directory, `${testInfo.workerIndex}-${safeTitle}.json`), JSON.stringify(merged));
+    await writeFile(
+      path.join(directory, `${testInfo.workerIndex}-${safeProject}-${safeTitle}.json`),
+      JSON.stringify(merged),
+    );
   }, { auto: true }],
 });
+
+async function resetSourceAndSettle(): Promise<void> {
+  if (!await resetE2eSource()) return;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
 
 export { expect };

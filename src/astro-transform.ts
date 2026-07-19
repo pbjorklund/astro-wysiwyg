@@ -1,13 +1,11 @@
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from '@astrojs/compiler';
+import { EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
 import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
 import { isInsideProjectRoot } from './project-path.ts';
 
-const BLOCK_TAGS = new Set([
-  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'figcaption', 'dt', 'dd', 'td', 'th',
-  'caption', 'legend', 'summary', 'button', 'label',
-]);
+const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
   'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
@@ -18,10 +16,16 @@ interface Position {
   end?: { offset?: number };
 }
 
+interface AstroAttribute {
+  kind: string;
+  name: string;
+}
+
 interface AstroNode {
   type: string;
   name?: string;
   value?: string;
+  attributes?: AstroAttribute[];
   children?: AstroNode[];
   position?: Position;
 }
@@ -81,11 +85,11 @@ export async function resolveAstroSourceMarker(
   const end = node?.position?.end?.offset;
   if (!node || !tag || start === undefined || end === undefined) {
     if (dynamicMatch && context.renderedText !== undefined) {
-      if (context.contextMarker) {
-        return resolveFrontmatterMarker(rootPath, dynamicMatch, context.contextMarker, context.renderedText);
-      }
       if (context.contextHref) {
         return resolveLinkedFrontmatterMarker(rootPath, dynamicMatch, context.contextHref, context.renderedText);
+      }
+      if (context.contextMarker) {
+        return resolveFrontmatterMarker(rootPath, dynamicMatch, context.contextMarker, context.renderedText);
       }
     }
     throw new Error('This text is not a static editable block.');
@@ -117,7 +121,7 @@ async function resolveLinkedFrontmatterMarker(
     routeCollection.endsWith('s') ? routeCollection.slice(0, -1) : `${routeCollection}s`,
   ]);
   for (const collection of collections) {
-    for (const extension of ['.md', '.mdx', '.mdoc']) {
+    for (const extension of ['.md', '.mdx']) {
       for (const relative of [
         path.join('src', 'content', collection, slug, `index${extension}`),
         path.join('src', 'content', collection, `${slug}${extension}`),
@@ -152,7 +156,7 @@ async function resolveFrontmatterMarker(
   if (!isInsideProjectRoot(root, file)) {
     throw new Error('The requested file is outside the Astro project root.');
   }
-  if (!['.md', '.mdx', '.mdoc'].includes(path.extname(file).toLowerCase())) {
+  if (!['.md', '.mdx'].includes(path.extname(file).toLowerCase())) {
     throw new Error('The current content file has no editable frontmatter.');
   }
 
@@ -247,7 +251,13 @@ function visit(node: AstroNode, callback: (node: AstroNode) => void): void {
 function isStaticInlineNode(node: AstroNode): boolean {
   if (node.type === 'text' || node.type === 'comment') return true;
   if (node.type !== 'element' || !node.name || !INLINE_TAGS.has(node.name.toLowerCase())) return false;
+  if (!node.attributes!.every(isStaticHtmlAttribute)) return false;
   return node.children!.every(isStaticInlineNode);
+}
+
+function isStaticHtmlAttribute(attribute: AstroAttribute): boolean {
+  return (attribute.kind === 'quoted' || attribute.kind === 'empty')
+    && !attribute.name.includes(':');
 }
 
 function span(node: AstroNode): number {
