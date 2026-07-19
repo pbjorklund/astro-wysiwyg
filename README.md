@@ -4,6 +4,8 @@
 
 During `astro dev`, the integration maps rendered elements to their source ranges, loads an in-browser editor, and sends validated changes to a local endpoint that updates those ranges.
 
+[![Watch Astro WYSIWYG edit rendered content and save it to Markdown](.github/assets/astro-wysiwyg-demo.gif)](.github/assets/astro-wysiwyg-demo.mp4)
+
 ## Install
 
 ```sh
