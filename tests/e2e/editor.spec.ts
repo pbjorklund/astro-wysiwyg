@@ -399,13 +399,11 @@ test('restores sessions with invalid source locations and oversized carets', asy
   await page.goto('/blocks');
   const first = page.locator('main > p').first();
   await first.click();
-  await page.evaluate(() => {
-    const session = JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}');
-    session.sourceLocation = 'invalid';
-    session.caret = 99_999;
-    delete session.html;
-    delete session.tag;
-    sessionStorage.setItem('astro-wysiwyg-active', JSON.stringify(session));
+  await seedActiveSessionOnNextLoad(page, {
+    sourceLocation: 'invalid',
+    caret: 99_999,
+    html: undefined,
+    tag: undefined,
   });
   await page.reload();
   await expect(first).toHaveAttribute('contenteditable', 'true');
