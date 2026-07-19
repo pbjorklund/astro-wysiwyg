@@ -37,8 +37,8 @@
   },
   "evidence": {
     "level": "live automated flow",
-    "real": ["Astro dev server", "Editor interaction", "Formatting", "Save request", "Source mutation", "Reload", "File assertion"],
-    "presentationOnly": ["Intro card", "Step labels", "Callouts", "Synthetic-data badge", "DOM cursor and click ring"]
+    "real": ["Visible Chromium window", "Native pointer", "Astro dev server", "Editor interaction", "Formatting", "Save request", "Source mutation", "Reload", "File assertion"],
+    "presentationOnly": ["Intro card", "Step labels", "Callouts", "Synthetic-data badge", "Click ring"]
   },
   "rubric": {
     "Audience": "pass",

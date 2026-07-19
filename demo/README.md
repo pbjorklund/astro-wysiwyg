@@ -18,7 +18,9 @@ Open the loopback URL printed by Astro. Click the launch-copy paragraph, edit or
 npm run demo:record
 ```
 
-The recorder builds the package, copies `demo/site` to a temporary workspace, starts Astro on a temporary loopback port, and drives Chromium through these steps:
+Recording requires Xvfb, FFmpeg with `x11grab`, Python 3, and the X11 and XTest libraries.
+
+The recorder builds the package, copies `demo/site` to a temporary workspace, starts Astro on a temporary loopback port, opens a visible Chromium window on an isolated X11 display, and records that live display while Playwright drives these steps:
 
 1. Click the source-backed paragraph.
 2. Replace "rough product updates" with "launch-ready product updates."
@@ -34,4 +36,4 @@ A successful run writes:
 - `artwork/demo/contact-sheet.jpg`: chronological review frames.
 - `artwork/demo/outcome.json`: safety, outcome, probe, hash, and review evidence.
 
-The Astro site, editor interaction, save request, source mutation, reload, and assertions are real. The intro card, step labels, callouts, synthetic-data badge, cursor, and click ring are presentation-only. The workflow uses no model provider, credentials, personal data, customer data, or external service. Failed runs do not replace the last successful artifacts, and the recorder removes its temporary workspace and child processes.
+The Chromium window, native pointer, Astro site, editor interaction, save request, source mutation, reload, and assertions are real. The intro card, step labels, callouts, synthetic-data badge, and click ring are presentation-only. The workflow uses no model provider, credentials, personal data, customer data, or external service. Failed runs do not replace the last successful artifacts, and the recorder removes its temporary workspace and child processes.

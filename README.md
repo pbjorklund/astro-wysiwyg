@@ -8,7 +8,7 @@ The integration adds no editor markup or client code to production builds.
 
 [![Edit Astro content on the page](artwork/demo/astro-wysiwyg-demo.gif)](artwork/demo/astro-wysiwyg-demo.mp4)
 
-The walkthrough uses a local synthetic Astro site and the real save endpoint. It clicks rendered Markdown, rewrites a phrase, applies bold formatting, saves, reloads, and checks the updated source file. Run `npm run demo:record` to regenerate the MP4 and GIF; the command uses no model provider or external service.
+The walkthrough records a visible Chromium window running a local synthetic Astro site and the real save endpoint. It uses the native pointer to click rendered Markdown, rewrites a phrase, applies visible bold formatting, saves, reloads, and checks the updated source file. Run `npm run demo:record` to regenerate the MP4 and GIF; the command uses no model provider or external service.
 
 ## Install
 

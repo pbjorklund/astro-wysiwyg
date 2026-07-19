@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "createdAt": "2026-07-19T15:18:50.811Z",
+  "createdAt": "2026-07-19T15:34:27.652Z",
   "evidence": "live automated flow",
   "story": "Click rendered Astro text, rewrite and format it, save to Markdown, then verify it after reload.",
   "safety": {
@@ -12,6 +12,8 @@
   },
   "truthBoundary": {
     "real": [
+      "visible Chromium window",
+      "native pointer",
       "Astro site",
       "click-to-edit",
       "text selection",
@@ -28,41 +30,41 @@
       "step labels",
       "callouts",
       "synthetic-data badge",
-      "DOM cursor",
       "click ring"
     ]
   },
   "outcome": {
     "browser": "pass: reloaded page contains bold launch-ready product updates",
     "source": "pass: temporary src/pages/index.md contains the expected Markdown",
+    "visualFormatting": "pass: Bold uses heavier text without underline",
     "endpointStatus": 200
   },
   "video": {
     "path": "artwork/demo/astro-wysiwyg-demo.mp4",
-    "durationSeconds": 26.333,
+    "durationSeconds": 25.033,
     "width": 1600,
     "height": 900,
     "codec": "h264",
     "pixelFormat": "yuv420p",
     "frameRate": "30/1",
-    "bytes": 1032815
+    "bytes": 513419
   },
   "preview": {
     "path": "artwork/demo/astro-wysiwyg-demo.gif",
-    "durationSeconds": 26.3,
+    "durationSeconds": 25,
     "width": 800,
     "height": 450,
     "codec": "gif",
     "pixelFormat": "bgra",
     "frameRate": "10/1",
-    "bytes": 1850085
+    "bytes": 642283
   },
   "hashes": {
-    "contract": "f7c2726f49d54a98f9d072398ebc9015a5480be078ca9c261189a0b70b371731",
+    "contract": "fb15062b94959d9def878e362d9311834f14a0146391c0604d1541b1d93babb0",
     "storyboard": "85d7d7c210ac52f67f5336e53fcbe80a9ed028550e359272ccdff8bc33b03622",
-    "capture": "f82afd89fb514858897ff3470d38469cbd39ec9d0f1e02a6f136bab6759aeb42",
-    "video": "1965d6ec771f1eebe31c020b9ac2ce92af59a6713fe8ded4ed5bca8ceaf42511",
-    "preview": "b698b828579185acaf844b3123fdd2d204d625d0c6079bc4d6fc0f017b4bf5a9"
+    "capture": "66e9e10577ef3add87aec1087c184b1b0bf95cbb43c7038de0b1e5344d343f43",
+    "video": "6f9f0e4dca2fc49f83e41f97a0ed33af424584cdc0af9c214abfb7eb0cf5ae1f",
+    "preview": "5d20c3b5b70b1f6485f4595d565af1c791c1d81bff15b9f50953629886de1a91"
   },
   "eval": {
     "caseId": "astro-wysiwyg-source-backed-edit",
@@ -73,6 +75,9 @@
       "pixelFormat",
       "fastStart",
       "gif",
+      "recording",
+      "nativePointer",
+      "stableFirstFrame",
       "host",
       "temporaryWorkspace",
       "sourcePathGate",
@@ -86,10 +91,10 @@
   "modelUse": "none",
   "review": {
     "status": "approved by manual frame audit",
-    "method": "Full contact sheet, eight chronological 1600x900 frames, and the final frame at 800x450.",
+    "method": "Frame zero, the next frame, the full contact sheet, the Bold action, and the final proof were inspected at 1600x900.",
     "independentReviewer": {
       "status": "unavailable",
-      "attempts": 4,
+      "attempts": 2,
       "infrastructureError": "frontmatter.tools?.split is not a function"
     },
     "scores": {
@@ -104,10 +109,11 @@
       "seriesConsistency": 9
     },
     "criticalFailures": [],
-    "rerenderCount": 1,
+    "rerecordCount": 1,
     "fixes": [
-      "Style restored <b> content like <strong>.",
-      "Increase final Markdown proof text for the 800x450 preview."
+      "Record a visible Chromium window from an isolated X11 display instead of Playwright page video.",
+      "Start capture only after the intro and native pointer are stable.",
+      "Render Bold as heavier text without decorative underline."
     ],
     "decision": "approve"
   }

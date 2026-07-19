@@ -21,6 +21,9 @@ const validation = {
   pixelFormat: 'yuv420p',
   fastStart: true,
   gif: '800x450@10:80',
+  recording: 'live Chromium window via X11 display capture',
+  nativePointer: true,
+  stableFirstFrame: true,
   host: '127.0.0.1',
   temporaryWorkspace: true,
   sourcePathGate: true,
@@ -45,8 +48,12 @@ async function recordDemo() {
   const candidateGif = path.join(outputDir, `.astro-wysiwyg-demo-${process.pid}.gif`);
   const candidateSheet = path.join(outputDir, `.astro-wysiwyg-contact-sheet-${process.pid}.jpg`);
   const candidateReport = path.join(outputDir, `.astro-wysiwyg-outcome-${process.pid}.json`);
+  const rawVideo = path.join(captureDir, 'live-window.mkv');
   let server;
+  let displayServer;
   let browser;
+  let nativePointer;
+  let capture;
 
   try {
     await cp(siteTemplate, workspace, { recursive: true });
@@ -75,22 +82,46 @@ async function recordDemo() {
     server = startAstro(workspace, port);
     await waitForServer(`http://127.0.0.1:${port}`, server);
 
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      viewport: { width: 1600, height: 900 },
-      recordVideo: { dir: captureDir, size: { width: 1600, height: 900 } },
+    const display = await startVirtualDisplay();
+    displayServer = display.child;
+    browser = await chromium.launch({
+      headless: false,
+      env: { ...process.env, DISPLAY: display.name },
+      args: [
+        '--window-position=0,0',
+        '--window-size=1600,900',
+        '--force-device-scale-factor=1',
+        '--no-first-run',
+        '--disable-infobars',
+        '--kiosk',
+      ],
     });
+    const context = await browser.newContext({ viewport: null });
     await context.addInitScript(installPresentationLayer);
     const page = await context.newPage();
-    const video = page.video();
-    const result = await runWalkthrough(page, `http://127.0.0.1:${port}`, sourceFile);
+    nativePointer = startNativePointer(display.name);
+    const result = await runWalkthrough(
+      page,
+      `http://127.0.0.1:${port}`,
+      sourceFile,
+      nativePointer,
+      async () => {
+        capture = startDisplayCapture(display.name, rawVideo);
+        await waitForCapture(capture);
+      },
+    );
+    await stopCapture(capture);
+    capture = undefined;
     await context.close();
-    const rawVideo = await video.path();
+    nativePointer.close();
+    nativePointer = undefined;
     await browser.close();
     browser = undefined;
+    await stopProcess(displayServer);
+    displayServer = undefined;
 
     await run('ffmpeg', [
-      '-y', '-ss', '0.15', '-i', rawVideo,
+      '-y', '-i', rawVideo,
       '-vf', 'fps=30,scale=1600:900:flags=lanczos',
       '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
       '-pix_fmt', 'yuv420p', '-movflags', '+faststart', candidateMp4,
@@ -121,8 +152,8 @@ async function recordDemo() {
         credentials: 'none',
       },
       truthBoundary: {
-        real: ['Astro site', 'click-to-edit', 'text selection', 'typing', 'Bold action', 'save endpoint', 'Markdown mutation', 'reload', 'browser assertion', 'file assertion'],
-        presentationOnly: ['intro card', 'step labels', 'callouts', 'synthetic-data badge', 'DOM cursor', 'click ring'],
+        real: ['visible Chromium window', 'native pointer', 'Astro site', 'click-to-edit', 'text selection', 'typing', 'Bold action', 'save endpoint', 'Markdown mutation', 'reload', 'browser assertion', 'file assertion'],
+        presentationOnly: ['intro card', 'step labels', 'callouts', 'synthetic-data badge', 'click ring'],
       },
       outcome: result,
       video: mediaSummary(path.join(outputDir, 'astro-wysiwyg-demo.mp4'), videoProbe),
@@ -143,9 +174,7 @@ async function recordDemo() {
       },
       modelUse: 'none',
       review: {
-        status: 'pending editorial frame review',
-        independentReviewerAttempts: 3,
-        independentReviewerInfrastructureError: 'frontmatter.tools?.split is not a function',
+        status: 'pending independent editorial frame review',
       },
     };
     await writeFile(candidateReport, `${JSON.stringify(report, null, 2)}\n`);
@@ -156,7 +185,10 @@ async function recordDemo() {
     await rename(candidateReport, path.join(outputDir, 'outcome.json'));
     process.stdout.write(`Recorded ${path.relative(root, path.join(outputDir, 'astro-wysiwyg-demo.mp4'))}\n`);
   } finally {
+    if (capture) await stopCapture(capture).catch(() => undefined);
+    if (nativePointer) nativePointer.close();
     if (browser) await browser.close().catch(() => undefined);
+    if (displayServer) await stopProcess(displayServer);
     if (server) await stopProcess(server);
     await Promise.all([
       rm(candidateMp4, { force: true }),
@@ -180,6 +212,7 @@ async function calibrateOutcomeGrader() {
 function gradeOutcome(report) {
   return report.browser.startsWith('pass: reloaded page')
     && report.source.startsWith('pass:')
+    && report.visualFormatting.startsWith('pass: Bold uses heavier text')
     && report.endpointStatus === 200;
 }
 
@@ -201,22 +234,28 @@ async function validateInputs() {
   }
 }
 
-async function runWalkthrough(page, url, sourceFile) {
-  let cursor = { x: 1480, y: 820 };
+async function runWalkthrough(page, url, sourceFile, nativePointer, startCapture) {
+  let cursor = { x: 1480, y: 20 };
+  let pointerOffset;
   const moveTo = async (target) => {
     const box = await target.boundingBox();
     if (!box) throw new Error('Walkthrough target is not visible.');
-    cursor = await moveMouse(page, cursor, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+    cursor = await moveMouse(page, nativePointer, pointerOffset, cursor, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
   };
   const click = async (target) => {
     await moveTo(target);
     await page.waitForTimeout(150);
-    await page.mouse.down();
+    await nativePointer.down();
     await page.waitForTimeout(90);
-    await page.mouse.up();
+    await nativePointer.up();
   };
 
   await page.goto(url, { waitUntil: 'networkidle' });
+  pointerOffset = await page.evaluate(() => ({
+    x: window.screenX,
+    y: window.screenY + window.outerHeight - window.innerHeight,
+  }));
+  await syncPointer(nativePointer, pointerOffset, cursor);
   const editor = page.locator('#astro-wysiwyg-toolbar');
   const paragraph = page.locator('article > p[data-astro-wysiwyg]').first();
   await paragraph.waitFor({ state: 'visible' });
@@ -225,6 +264,8 @@ async function runWalkthrough(page, url, sourceFile) {
   if (!(await readFile(sourceFile, 'utf8')).includes(expectedBefore)) throw new Error('Source start state is incorrect.');
 
   await showIntro(page, 'astro-wysiwyg', 'Edit Astro content on the page');
+  await page.waitForTimeout(300);
+  await startCapture();
   await page.waitForTimeout(2_000);
   await hideIntro(page);
   await page.waitForTimeout(500);
@@ -238,7 +279,7 @@ async function runWalkthrough(page, url, sourceFile) {
 
   await setCallout(page, '2  Rewrite in place');
   await page.waitForTimeout(700);
-  cursor = await selectText(page, paragraph, 'rough product updates', cursor);
+  cursor = await selectText(page, paragraph, 'rough product updates', nativePointer, pointerOffset, cursor);
   const selectedBeforeRewrite = await page.evaluate(() => getSelection()?.toString() ?? '');
   if (selectedBeforeRewrite !== 'rough product updates') {
     throw new Error(`Mouse selection before rewrite was ${JSON.stringify(selectedBeforeRewrite)}.`);
@@ -257,7 +298,7 @@ async function runWalkthrough(page, url, sourceFile) {
 
   await setCallout(page, '3  Select and format');
   await page.waitForTimeout(850);
-  cursor = await selectText(page, paragraph, 'launch-ready product updates', cursor);
+  cursor = await selectText(page, paragraph, 'launch-ready product updates', nativePointer, pointerOffset, cursor);
   const selectedBeforeFormat = await page.evaluate(() => getSelection()?.toString() ?? '');
   if (selectedBeforeFormat !== 'launch-ready product updates') {
     throw new Error(`Mouse selection before formatting was ${JSON.stringify(selectedBeforeFormat)}.`);
@@ -265,12 +306,21 @@ async function runWalkthrough(page, url, sourceFile) {
   await page.waitForTimeout(450);
   const bold = editor.getByRole('button', { name: 'Bold' });
   await click(bold);
-  const formatState = await paragraph.evaluate((element) => ({
-    html: element.innerHTML,
-    selected: getSelection()?.toString() ?? '',
-  }));
+  const formatState = await paragraph.evaluate((element) => {
+    const formatted = element.querySelector('b, strong');
+    const style = formatted ? getComputedStyle(formatted) : null;
+    return {
+      html: element.innerHTML,
+      selected: getSelection()?.toString() ?? '',
+      fontWeight: style?.fontWeight ?? '',
+      textDecorationLine: style?.textDecorationLine ?? '',
+    };
+  });
   if (!/<(?:b|strong)>launch-ready product updates<\/(?:b|strong)>/.test(formatState.html)) {
     throw new Error(`Bold did not format the selected text: ${JSON.stringify(formatState)}.`);
+  }
+  if (Number(formatState.fontWeight) < 700 || formatState.textDecorationLine.includes('underline')) {
+    throw new Error(`Bold has the wrong visible style: ${JSON.stringify(formatState)}.`);
   }
   await page.waitForTimeout(1_350);
 
@@ -306,6 +356,7 @@ async function runWalkthrough(page, url, sourceFile) {
   return {
     browser: 'pass: reloaded page contains bold launch-ready product updates',
     source: 'pass: temporary src/pages/index.md contains the expected Markdown',
+    visualFormatting: 'pass: Bold uses heavier text without underline',
     endpointStatus: response.status(),
   };
 }
@@ -325,21 +376,14 @@ function installPresentationLayer() {
       #demo-callout::before { position: absolute; top: 15px; bottom: 15px; left: 10px; width: 4px; content: ''; background: #38bdf8; border-radius: 9px; }
       #demo-callout[data-visible='true'] { opacity: 1; transform: translateY(0); }
       #demo-proof { display: none; margin-top: 12px; color: #bae6fd; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 19px; font-weight: 500; }
-      #demo-cursor { position: fixed; top: 0; left: 0; z-index: 2147483647; width: 30px; height: 34px; opacity: 0; filter: drop-shadow(0 2px 2px rgb(0 0 0 / 55%)); transform: translate(-3px, -2px); transition: opacity 120ms ease; }
-      #demo-cursor::before { display: block; width: 0; height: 0; content: ''; border-top: 25px solid white; border-right: 16px solid transparent; filter: drop-shadow(2px 1px 0 #07111f) drop-shadow(-1px -1px 0 #07111f); transform: rotate(-12deg); transform-origin: top left; }
       .demo-click-ring { position: fixed; z-index: 2147483646; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 4px solid #38bdf8; border-radius: 50%; animation: demo-ring 280ms ease-out forwards; }
       @keyframes demo-ring { from { opacity: .95; transform: scale(.35); } to { opacity: 0; transform: scale(1); } }
     `;
     document.head.append(style);
     const layer = document.createElement('div');
     layer.id = 'demo-presentation';
-    layer.innerHTML = '<div id="demo-intro"><div><small></small><strong></strong></div></div><div id="demo-badge">Live test demo · synthetic data</div><div id="demo-callout"><span></span><small id="demo-proof"></small></div><div id="demo-cursor"></div>';
+    layer.innerHTML = '<div id="demo-intro"><div><small></small><strong></strong></div></div><div id="demo-badge">Live test demo · synthetic data</div><div id="demo-callout"><span></span><small id="demo-proof"></small></div>';
     document.body.append(layer);
-    const cursor = layer.querySelector('#demo-cursor');
-    document.addEventListener('mousemove', (event) => {
-      cursor.style.opacity = '1';
-      cursor.style.translate = `${event.clientX}px ${event.clientY}px`;
-    }, true);
     document.addEventListener('mousedown', (event) => {
       const ring = document.createElement('span');
       ring.className = 'demo-click-ring';
@@ -383,7 +427,7 @@ async function setCallout(page, text, proof = '') {
   }, { text, proof });
 }
 
-async function selectText(page, locator, phrase, cursor) {
+async function selectText(page, locator, phrase, nativePointer, pointerOffset, cursor) {
   const points = await locator.evaluate((element, selectedPhrase) => {
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     let node;
@@ -405,31 +449,191 @@ async function selectText(page, locator, phrase, cursor) {
     }
     throw new Error(`Could not find phrase: ${selectedPhrase}`);
   }, phrase);
-  cursor = await moveMouse(page, cursor, points.start);
+  cursor = await moveMouse(page, nativePointer, pointerOffset, cursor, points.start);
   await page.waitForTimeout(140);
-  await page.mouse.down();
-  cursor = await moveMouse(page, cursor, points.end, 42);
-  await page.mouse.up();
+  await nativePointer.down();
+  cursor = await moveMouse(page, nativePointer, pointerOffset, cursor, points.end, 42);
+  await nativePointer.up();
   return cursor;
 }
 
-async function moveMouse(page, from, to, steps = 36) {
+async function moveMouse(page, nativePointer, pointerOffset, from, to, steps = 36) {
   const bend = Math.min(26, Math.abs(to.x - from.x) * 0.05);
   for (let index = 1; index <= steps; index += 1) {
     const progress = index / steps;
     const eased = progress * progress * (3 - 2 * progress);
     const x = from.x + (to.x - from.x) * eased;
     const y = from.y + (to.y - from.y) * eased - Math.sin(Math.PI * progress) * bend;
-    await page.mouse.move(x, y);
+    await syncPointer(nativePointer, pointerOffset, { x, y });
     await page.waitForTimeout(12);
   }
   return to;
+}
+
+async function syncPointer(nativePointer, pointerOffset, point) {
+  await nativePointer.move(pointerOffset.x + point.x, pointerOffset.y + point.y);
 }
 
 function assertInside(rootPath, candidatePath) {
   const relative = path.relative(rootPath, candidatePath);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('Demo source path escaped the temporary Astro src directory.');
+  }
+}
+
+async function startVirtualDisplay() {
+  return new Promise((resolve, reject) => {
+    const child = spawn('Xvfb', [
+      '-displayfd', '1',
+      '-screen', '0', '1600x900x24',
+      '-ac',
+      '+extension', 'RANDR',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`Xvfb did not allocate a display.\n${stderr}`));
+    }, 10_000);
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      const line = stdout.split('\n')[0].trim();
+      if (settled || !/^\d+$/.test(line)) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ child, name: `:${line}` });
+    });
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_000); });
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`Xvfb exited before allocating a display (${code}).\n${stderr}`));
+    });
+  });
+}
+
+function startNativePointer(display) {
+  const script = String.raw`
+import ctypes
+import sys
+
+x11 = ctypes.CDLL('libX11.so.6')
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+x11.XDefaultRootWindow.restype = ctypes.c_ulong
+x11.XWarpPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_int, ctypes.c_int]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+xtst = ctypes.CDLL('libXtst.so.6')
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+display = x11.XOpenDisplay(None)
+if not display:
+    raise RuntimeError('Could not open the demo X11 display')
+root = x11.XDefaultRootWindow(display)
+for line in sys.stdin:
+    parts = line.split()
+    if parts[0] == 'move':
+        x, y = map(int, parts[1:])
+        x11.XWarpPointer(display, 0, root, 0, 0, 0, 0, x, y)
+    elif parts[0] == 'down':
+        xtst.XTestFakeButtonEvent(display, 1, True, 0)
+    elif parts[0] == 'up':
+        xtst.XTestFakeButtonEvent(display, 1, False, 0)
+    x11.XFlush(display)
+    print('ok', flush=True)
+`;
+  const child = spawn('python3', ['-u', '-c', script], {
+    env: { ...process.env, DISPLAY: display },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const pending = [];
+  let stdout = '';
+  let stderr = '';
+  let failure;
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+    while (stdout.includes('\n')) {
+      const newline = stdout.indexOf('\n');
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line === 'ok') pending.shift()?.resolve();
+    }
+  });
+  child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
+  const fail = (error) => {
+    failure = error;
+    while (pending.length) pending.shift().reject(error);
+  };
+  child.once('error', fail);
+  child.once('exit', (code) => {
+    if (code !== 0 && !failure) fail(new Error(`Native pointer helper exited (${code}).\n${stderr}`));
+  });
+  const request = (command) => {
+    if (failure) return Promise.reject(failure);
+    return new Promise((resolve, reject) => {
+      pending.push({ resolve, reject });
+      child.stdin.write(`${command}\n`);
+    });
+  };
+  return {
+    move: (x, y) => request(`move ${Math.round(x)} ${Math.round(y)}`),
+    down: () => request('down'),
+    up: () => request('up'),
+    close() {
+      child.stdin.end();
+    },
+  };
+}
+
+function startDisplayCapture(display, output) {
+  const child = spawn('ffmpeg', [
+    '-y',
+    '-hide_banner',
+    '-loglevel', 'warning',
+    '-f', 'x11grab',
+    '-draw_mouse', '1',
+    '-framerate', '30',
+    '-video_size', '1600x900',
+    '-i', display,
+    '-an',
+    '-c:v', 'ffv1',
+    output,
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  let error;
+  child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-12_000); });
+  child.once('error', (value) => { error = value; });
+  const exit = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  return { child, exit, getError: () => error, getStderr: () => stderr };
+}
+
+async function waitForCapture(capture) {
+  await Promise.race([
+    new Promise((resolve) => setTimeout(resolve, 500)),
+    capture.exit,
+  ]);
+  if (capture.getError()) throw capture.getError();
+  if (capture.child.exitCode !== null) {
+    throw new Error(`Display capture exited before the walkthrough (${capture.child.exitCode}).\n${capture.getStderr()}`);
+  }
+}
+
+async function stopCapture(capture) {
+  if (capture.child.exitCode === null) capture.child.kill('SIGINT');
+  const { code, signal } = await capture.exit;
+  if (capture.getError()) throw capture.getError();
+  if (code !== 0 && code !== 255 && signal !== 'SIGINT') {
+    throw new Error(`Display capture failed (${code ?? signal}).\n${capture.getStderr()}`);
   }
 }
 

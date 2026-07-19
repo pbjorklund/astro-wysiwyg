@@ -9,6 +9,8 @@ import test from 'node:test';
 const contractPath = new URL('../demo/recording/contract.json', import.meta.url);
 const storyboardPath = new URL('../demo/recording/storyboard.json', import.meta.url);
 const fixturePath = new URL('../demo/site/src/pages/index.md', import.meta.url);
+const layoutPath = new URL('../demo/site/src/layouts/DemoLayout.astro', import.meta.url);
+const recorderPath = new URL('../demo/record.mjs', import.meta.url);
 const videoPath = new URL('../artwork/demo/astro-wysiwyg-demo.mp4', import.meta.url);
 
 test('demo contract and storyboard define one source-backed outcome', async () => {
@@ -37,6 +39,19 @@ test('demo fixture starts with safe synthetic launch copy', async () => {
   assert.doesNotMatch(fixture, /(password|api[_-]?key|bearer|customer|@)/i);
 });
 
+test('demo renders Bold as heavier text without substituting underline', async () => {
+  const layout = await readFile(layoutPath, 'utf8');
+  assert.match(layout, /article :is\(strong, b\).*font-weight: 800/);
+  assert.doesNotMatch(layout, /article :is\(strong, b\).*text-decoration: underline/);
+});
+
+test('recorder uses live-window capture without a simulated DOM pointer', async () => {
+  const recorder = await readFile(recorderPath, 'utf8');
+  assert.match(recorder, /x11grab/);
+  assert.doesNotMatch(recorder, /demo-cursor/);
+  assert.ok(recorder.indexOf("await showIntro(page") < recorder.indexOf('await startCapture()'));
+});
+
 test('recorder validates its safety, encoding, and outcome contract', () => {
   const result = spawnSync(process.execPath, ['demo/record.mjs', '--validate'], {
     cwd: new URL('..', import.meta.url),
@@ -50,6 +65,9 @@ test('recorder validates its safety, encoding, and outcome contract', () => {
     pixelFormat: 'yuv420p',
     fastStart: true,
     gif: '800x450@10:80',
+    recording: 'live Chromium window via X11 display capture',
+    nativePointer: true,
+    stableFirstFrame: true,
     host: '127.0.0.1',
     temporaryWorkspace: true,
     sourcePathGate: true,

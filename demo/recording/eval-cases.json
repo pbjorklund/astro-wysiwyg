@@ -6,6 +6,7 @@
       "report": {
         "browser": "pass: reloaded page contains bold launch-ready product updates",
         "source": "pass: temporary src/pages/index.md contains the expected Markdown",
+        "visualFormatting": "pass: Bold uses heavier text without underline",
         "endpointStatus": 200
       },
       "expected": "pass"
@@ -15,7 +16,18 @@
       "report": {
         "browser": "pass: current page contains launch-ready product updates",
         "source": "fail: Markdown source still contains rough product updates",
+        "visualFormatting": "pass: Bold uses heavier text without underline",
         "endpointStatus": 500
+      },
+      "expected": "fail"
+    },
+    {
+      "id": "known-bad-bold-rendered-as-underline",
+      "report": {
+        "browser": "pass: reloaded page contains bold launch-ready product updates",
+        "source": "pass: temporary src/pages/index.md contains the expected Markdown",
+        "visualFormatting": "fail: Bold appears as underline",
+        "endpointStatus": 200
       },
       "expected": "fail"
     }
