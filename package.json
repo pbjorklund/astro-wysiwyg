@@ -2,6 +2,17 @@
   "name": "astro-wysiwyg",
   "version": "0.1.0",
   "description": "Edit rendered Astro and Markdown text in place and save it to source files during development.",
+  "homepage": "https://github.com/pbjorklund/astro-wysiswyg#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pbjorklund/astro-wysiswyg.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pbjorklund/astro-wysiswyg/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -34,6 +45,9 @@
   },
   "keywords": [
     "astro",
+    "astro-integration",
+    "dev-toolbar",
+    "devtools",
     "wysiwyg",
     "contenteditable",
     "markdown"
