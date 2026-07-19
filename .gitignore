@@ -5,6 +5,9 @@ dist/
 .af/
 test-results/
 playwright-report/
+/demo/
+/artwork/demo/
+/tests/demo-recording.test.ts
 coverage/
 .coverage/
 *.tgz

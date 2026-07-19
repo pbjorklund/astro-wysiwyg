@@ -30,8 +30,6 @@
     "test:coverage": "npm run test:coverage:server && npm run test:e2e && node tests/report-coverage.mjs",
     "check:unit": "npm run test:unit && npm run build",
     "check": "npm run test:coverage",
-    "demo:dev": "npm run build && astro dev --root demo/site --host 127.0.0.1",
-    "demo:record": "npm run build && node demo/record.mjs",
     "prepack": "npm run check:unit"
   },
   "keywords": [
