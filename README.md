@@ -1,6 +1,6 @@
 # Astro WYSIWYG
 
-Edit rendered Astro content in place during development. Changes are written back to `.astro`, `.md`, or `.mdx` source files, while production builds remain unchanged.
+`WYSIWYG` stands for "what you see is what you get": edit content where it appears on the page instead of switching to a source file. This integration writes changes back to `.astro`, `.md`, or `.mdx` files during development, while production builds remain unchanged.
 
 During `astro dev`, the integration maps rendered elements to their source ranges, loads an in-browser editor, and sends validated changes to a local endpoint that updates those ranges.
 
