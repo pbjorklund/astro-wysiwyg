@@ -56,17 +56,3 @@ Do not expose the development editor through a LAN host, reverse proxy, or tunne
 ## Browser support
 
 The editor supports current desktop Chromium, Firefox, and Safari.
-
-## Development
-
-Run the fast tests and TypeScript build:
-
-```sh
-npm run check:unit
-```
-
-Run the full test and coverage gate:
-
-```sh
-npm run check
-```
