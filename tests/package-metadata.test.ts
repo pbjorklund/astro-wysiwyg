@@ -14,12 +14,12 @@ test('package metadata qualifies the integration for Astro discovery', async () 
     publishConfig?: { access?: string };
   };
 
-  assert.equal(packageJson.homepage, 'https://github.com/pbjorklund/astro-wysiswyg#readme');
+  assert.equal(packageJson.homepage, 'https://github.com/pbjorklund/astro-wysiwyg#readme');
   assert.deepEqual(packageJson.repository, {
     type: 'git',
-    url: 'git+https://github.com/pbjorklund/astro-wysiswyg.git',
+    url: 'git+https://github.com/pbjorklund/astro-wysiwyg.git',
   });
-  assert.equal(packageJson.bugs?.url, 'https://github.com/pbjorklund/astro-wysiswyg/issues');
+  assert.equal(packageJson.bugs?.url, 'https://github.com/pbjorklund/astro-wysiwyg/issues');
   assert.ok(packageJson.keywords?.includes('astro-integration'));
   assert.ok(packageJson.keywords?.includes('dev-toolbar'));
   assert.equal(packageJson.publishConfig?.access, 'public');
