@@ -28,7 +28,18 @@ jobs:
         run: |
           run_id="$(gh run list --workflow CI --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
           test -n "$run_id" || { echo "No successful CI run found for $GITHUB_SHA"; exit 1; }
-      - run: npm publish
+      - name: Check whether this version is already published
+        id: registry
+        run: |
+          package="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$package@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.registry.outputs.published != 'true'
+        run: npm publish
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

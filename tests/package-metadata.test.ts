@@ -31,6 +31,7 @@ test('release tags publish only after CI passed for the tagged commit', async ()
   assert.match(workflow, /tags:\s*\['v\*'\]/);
   assert.match(workflow, /id-token: write/);
   assert.match(workflow, /gh run list --workflow CI --commit "\$GITHUB_SHA"/);
+  assert.match(workflow, /npm view "\$package@\$version"/);
   assert.match(workflow, /npm publish/);
   assert.match(workflow, /gh release create/);
 });
