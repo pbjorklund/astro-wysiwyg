@@ -1,4 +1,7 @@
 import { EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
+import { imageUploadEndpoint, suggestImageFilename } from './image-rules.ts';
+import { lucideIcon } from './lucide-icons.ts';
+import { VIDEO_ACCEPT, suggestVideoFilename, videoUploadEndpoint } from './video-rules.ts';
 import {
   FRONTMATTER_EVENT,
   PREFERENCES_EVENT,
@@ -14,6 +17,12 @@ export interface EditorOptions {
 interface SaveResponse {
   marker?: string;
   error?: string;
+}
+
+interface MediaUploadResponse {
+  error?: string;
+  uploaded?: boolean;
+  url?: string;
 }
 
 interface FrontmatterFieldResponse {
@@ -97,6 +106,10 @@ export function startEditor(options: EditorOptions): void {
   let frontmatterFields: FrontmatterFieldResponse[] = [];
   let activeSaveInFlight = false;
   let suppressRestoredAutosave = false;
+  let lastToolbarControl: HTMLButtonElement | undefined;
+  let dismissedTooltip: HTMLButtonElement | undefined;
+  let imagePreviewObjectUrl: string | undefined;
+  let videoPreviewObjectUrl: string | undefined;
   const host = document.createElement('div');
   host.id = HOST_ID;
   host.setAttribute(PERSIST_ATTRIBUTE, HOST_ID);
@@ -132,17 +145,36 @@ export function startEditor(options: EditorOptions): void {
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('input', onInput, true);
   document.addEventListener('focusin', onDocumentFocus);
-  document.addEventListener('selectionchange', rememberActiveSession);
+  document.addEventListener('selectionchange', onSelectionChange);
   document.addEventListener(PREFERENCES_EVENT, onPreferences);
   document.addEventListener(FRONTMATTER_EVENT, () => void openFrontmatterEditor());
   window.addEventListener('scroll', positionToolbar, true);
   window.addEventListener('resize', positionToolbar);
   shadow.addEventListener('pointerdown', (event) => {
-    if (event.target instanceof HTMLButtonElement) event.preventDefault();
+    if (event.composedPath().some((item) => item instanceof HTMLButtonElement)) event.preventDefault();
   });
   shadow.addEventListener('click', onToolbarClick);
   shadow.addEventListener('keydown', onToolbarKeyDown);
-  shadow.addEventListener('input', rememberFrontmatterDraft);
+  shadow.addEventListener('focusin', onToolbarFocusIn);
+  shadow.addEventListener('focusout', onToolbarFocusOut);
+  shadow.addEventListener('pointerover', onToolbarPointerOver);
+  shadow.addEventListener('pointerout', onToolbarPointerOut);
+  shadow.addEventListener('input', (event) => {
+    rememberFrontmatterDraft(event);
+    onImageReferenceInput(event);
+  });
+  shadow.addEventListener('change', onToolbarChange);
+  const imageDialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+  imageDialog?.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeImageEditor(true);
+  });
+  const videoDialog = shadow.querySelector<HTMLDialogElement>('.video-editor');
+  videoDialog?.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeVideoEditor(true);
+  });
+  initializeToolbarFocus();
 
   function onBeforeSwap(event: Event): void {
     const newDocument = (event as Event & { newDocument: Document }).newDocument;
@@ -164,6 +196,8 @@ export function startEditor(options: EditorOptions): void {
       undoHistory = [];
     }
     closeFrontmatterEditor();
+    closeImageEditor();
+    closeVideoEditor();
     closeLinkEditor();
     applyPreferences(preferences);
     prepareEditableBlocks(document);
@@ -293,6 +327,8 @@ export function startEditor(options: EditorOptions): void {
     setRovingTabStop(block);
     if (active === block) return active;
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
+    if (isImageEditorOpen()) closeImageEditor();
+    if (isVideoEditorOpen()) closeVideoEditor();
     if (isLinkEditorOpen()) closeLinkEditor();
     if (active) {
       const previous = active;
@@ -313,6 +349,7 @@ export function startEditor(options: EditorOptions): void {
     toolbar.hidden = false;
     updateUndoButton();
     updateStructureButtons();
+    updateControlStates();
     setStatus('Editing');
     positionToolbar();
     active.focus({ preventScroll: true });
@@ -453,6 +490,11 @@ export function startEditor(options: EditorOptions): void {
     if (preferences.enabled) addEditDescription(element);
   }
 
+  function onSelectionChange(): void {
+    rememberActiveSession();
+    updateControlStates();
+  }
+
   function onInput(event: Event): void {
     if (event.target !== active || !active) return;
     window.clearTimeout(saveTimer);
@@ -460,6 +502,7 @@ export function startEditor(options: EditorOptions): void {
     setStatus('Unsaved');
     rememberActiveSession();
     updateUndoButton();
+    updateControlStates();
     if (preferences.autosave) {
       const edited = active;
       saveTimer = window.setTimeout(() => queueSave(edited), options.saveDelay);
@@ -507,7 +550,7 @@ export function startEditor(options: EditorOptions): void {
       queueSave(active);
     } else if (event.altKey && event.key === 'F10') {
       event.preventDefault();
-      toolbar.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+      focusToolbar();
     } else if (event.altKey && /^Digit[1-6]$/.test(event.code)) {
       event.preventDefault();
       changeBlockTag(`h${event.code.slice(-1)}`);
@@ -519,18 +562,727 @@ export function startEditor(options: EditorOptions): void {
 
   function onToolbarKeyDown(event: Event): void {
     if (!(event instanceof KeyboardEvent)) return;
+    const target = event.target;
     if (event.key === 'Enter'
-      && event.target instanceof HTMLInputElement
-      && event.target.closest('.link-editor')) {
+      && target instanceof HTMLInputElement
+      && target.closest('.link-editor')) {
       event.preventDefault();
       applyLink();
       return;
     }
+    if (target instanceof HTMLButtonElement && target.closest('[role="menu"]')) {
+      const items = enabledMenuItems(target.closest<HTMLElement>('[role="menu"]')!);
+      const index = items.indexOf(target);
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        items[(index + direction + items.length) % items.length]?.focus();
+        return;
+      }
+      if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        items[event.key === 'Home' ? 0 : items.length - 1]?.focus();
+        return;
+      }
+    }
+    if (target instanceof HTMLButtonElement && target.hasAttribute('data-toolbar-item')) {
+      if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && target.getAttribute('aria-haspopup') === 'menu') {
+        event.preventDefault();
+        openMenu(target.dataset.action === 'toggle-text-style' ? 'text-style-menu' : 'insert-menu', event.key === 'ArrowUp');
+        return;
+      }
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        moveToolbarFocus(target, event.key);
+        return;
+      }
+    }
     if (event.key !== 'Escape') return;
     event.preventDefault();
-    if (isFrontmatterEditorOpen()) closeFrontmatterEditor(true);
-    else if (isLinkEditorOpen()) closeLinkEditor();
+    if (hideOpenTooltip()) return;
+    const openMenuElement = toolbar.querySelector<HTMLElement>('[role="menu"]:not([hidden])');
+    if (openMenuElement) closeMenu(openMenuElement, true);
+    else if (isFrontmatterEditorOpen()) closeFrontmatterEditor(true);
+    else if (isImageEditorOpen()) closeImageEditor(true);
+    else if (isVideoEditorOpen()) closeVideoEditor(true);
+    else if (isLinkEditorOpen()) closeLinkEditor(true);
     else void finishEditing();
+  }
+
+  function toolbarControls(): HTMLButtonElement[] {
+    return [...toolbar.querySelectorAll<HTMLButtonElement>('[data-toolbar-item]')];
+  }
+
+  function enabledToolbarControls(): HTMLButtonElement[] {
+    return toolbarControls().filter((button) => !button.disabled);
+  }
+
+  function enabledMenuItems(menu: HTMLElement): HTMLButtonElement[] {
+    return [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+  }
+
+  function initializeToolbarFocus(): void {
+    const first = enabledToolbarControls()[0];
+    for (const button of toolbarControls()) button.tabIndex = button === first ? 0 : -1;
+  }
+
+  function setRovingControl(control: HTMLButtonElement): void {
+    for (const button of toolbarControls()) button.tabIndex = button === control ? 0 : -1;
+    lastToolbarControl = control;
+  }
+
+  function focusToolbar(): void {
+    const enabled = enabledToolbarControls();
+    const target = lastToolbarControl && enabled.includes(lastToolbarControl)
+      ? lastToolbarControl
+      : enabled[0];
+    /* istanbul ignore next -- The static toolbar always has an enabled non-media control. */
+    if (!target) return;
+    setRovingControl(target);
+    target.focus();
+  }
+
+  function moveToolbarFocus(current: HTMLButtonElement, key: string): void {
+    const controls = enabledToolbarControls();
+    const index = controls.indexOf(current);
+    /* istanbul ignore next -- Keyboard handling calls this only for an enabled toolbar control. */
+    if (index < 0 || controls.length === 0) return;
+    const target = key === 'Home'
+      ? controls[0]
+      : key === 'End'
+        ? controls.at(-1)
+        : controls[(index + (key === 'ArrowRight' ? 1 : -1) + controls.length) % controls.length];
+    /* istanbul ignore next -- A non-empty enabled control list always yields a target. */
+    if (!target) return;
+    setRovingControl(target);
+    target.focus();
+  }
+
+  function onToolbarFocusIn(event: Event): void {
+    if (!(event instanceof FocusEvent) || !(event.target instanceof HTMLButtonElement)) return;
+    if (event.target.hasAttribute('data-toolbar-item')) setRovingControl(event.target);
+    showTooltip(event.target);
+  }
+
+  function onToolbarFocusOut(event: Event): void {
+    if (!(event instanceof FocusEvent) || !(event.target instanceof HTMLButtonElement)) return;
+    dismissedTooltip = undefined;
+    hideTooltipFor(event.target);
+  }
+
+  function tooltipButton(target: EventTarget | null): HTMLButtonElement | undefined {
+    return target instanceof Element
+      ? target.closest<HTMLButtonElement>('button[data-tooltip]') ?? undefined
+      : undefined;
+  }
+
+  function onToolbarPointerOver(event: Event): void {
+    if (!(event instanceof PointerEvent)) return;
+    const button = tooltipButton(event.target);
+    if (button && button !== tooltipButton(event.relatedTarget)) showTooltip(button);
+  }
+
+  function onToolbarPointerOut(event: Event): void {
+    if (!(event instanceof PointerEvent)) return;
+    const button = tooltipButton(event.target);
+    const tooltip = toolbar.querySelector<HTMLElement>('[role="tooltip"]');
+    if (button && event.relatedTarget !== tooltip && !button.contains(event.relatedTarget as Node | null)) {
+      dismissedTooltip = undefined;
+      hideTooltipFor(button);
+    } else if (tooltip && event.target === tooltip) {
+      const owner = toolbar.querySelector<HTMLButtonElement>(`[data-tooltip-owner="${tooltip.dataset.owner}"]`);
+      if (event.relatedTarget !== owner && !owner?.contains(event.relatedTarget as Node | null)) {
+        tooltip.hidden = true;
+        dismissedTooltip = undefined;
+      }
+    }
+  }
+
+  function showTooltip(button: HTMLButtonElement): void {
+    const message = button.dataset.tooltip;
+    const tooltip = toolbar.querySelector<HTMLElement>('[role="tooltip"]');
+    /* istanbul ignore if -- Called for static tooltip buttons; dismissal is exercised through Escape. */
+    if (!message || !tooltip || dismissedTooltip === button) return;
+    tooltip.textContent = message;
+    tooltip.dataset.owner = button.dataset.tooltipOwner as string;
+    tooltip.hidden = false;
+    positionSurface(tooltip, button, true);
+  }
+
+  function hideTooltipFor(button: HTMLButtonElement): void {
+    const tooltip = toolbar.querySelector<HTMLElement>('[role="tooltip"]');
+    if (tooltip && tooltip.dataset.owner === button.dataset.tooltipOwner) tooltip.hidden = true;
+  }
+
+  function hideOpenTooltip(): boolean {
+    const tooltip = toolbar.querySelector<HTMLElement>('[role="tooltip"]:not([hidden])');
+    if (!tooltip) return false;
+    const owner = toolbar.querySelector<HTMLButtonElement>(`[data-tooltip-owner="${tooltip.dataset.owner}"]`);
+    tooltip.hidden = true;
+    /* istanbul ignore else -- Visible tooltips always retain their static owner button. */
+    if (owner) dismissedTooltip = owner;
+    return true;
+  }
+
+  function toggleMenu(id: string): void {
+    const menu = toolbar.querySelector<HTMLElement>(`#${id}`);
+    /* istanbul ignore next -- Callers use IDs from static menu markup. */
+    if (!menu) return;
+    if (menu.hidden) openMenu(id);
+    else closeMenu(menu, true);
+  }
+
+  function openMenu(id: string, focusLast = false): void {
+    const menu = toolbar.querySelector<HTMLElement>(`#${id}`);
+    const trigger = toolbar.querySelector<HTMLButtonElement>(`[aria-controls="${id}"]`);
+    /* istanbul ignore next -- Callers use matched static menu and trigger IDs. */
+    if (!menu || !trigger) return;
+    closeOpenMenus(false);
+    if (isLinkEditorOpen()) closeLinkEditor();
+    hideOpenTooltip();
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    positionSurface(menu, trigger);
+    const items = enabledMenuItems(menu);
+    items[focusLast ? items.length - 1 : 0]?.focus();
+  }
+
+  function closeMenu(menu: HTMLElement, restoreFocus: boolean): void {
+    menu.hidden = true;
+    const trigger = toolbar.querySelector<HTMLButtonElement>(`[aria-controls="${menu.id}"]`);
+    trigger?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && trigger) {
+      setRovingControl(trigger);
+      trigger.focus();
+    }
+  }
+
+  function closeOpenMenus(restoreFocus: boolean): void {
+    for (const menu of toolbar.querySelectorAll<HTMLElement>('[role="menu"]:not([hidden])')) {
+      closeMenu(menu, restoreFocus);
+    }
+  }
+
+  function positionSurface(surface: HTMLElement, trigger: HTMLElement, preferAbove = false): void {
+    const inset = 8;
+    const gap = surface.getAttribute('role') === 'tooltip' ? 0 : 6;
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    const surfaceRect = surface.getBoundingClientRect();
+    const fitsBelow = triggerRect.bottom + gap + surfaceRect.height <= window.innerHeight - inset;
+    const placeAbove = preferAbove || !fitsBelow;
+    const viewportTop = placeAbove
+      ? Math.max(inset, triggerRect.top - surfaceRect.height - gap)
+      : Math.min(window.innerHeight - surfaceRect.height - inset, triggerRect.bottom + gap);
+    const viewportLeft = Math.max(
+      inset,
+      Math.min(triggerRect.left, window.innerWidth - surfaceRect.width - inset),
+    );
+    surface.style.left = `${Math.round(viewportLeft - toolbarRect.left)}px`;
+    surface.style.top = `${Math.round(viewportTop - toolbarRect.top)}px`;
+  }
+
+  function onImageReferenceInput(event: Event): void {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.name !== 'existing-reference') return;
+    previewExistingImage(input.value);
+    syncImagePrimaryButton();
+  }
+
+  function onToolbarChange(event: Event): void {
+    const input = event.target;
+    /* istanbul ignore next -- Toolbar change controls are native inputs. */
+    if (!(input instanceof HTMLInputElement)) return;
+    if (input.name.startsWith('video-')) {
+      onVideoFormChange(input);
+      return;
+    }
+    if (input.name === 'image-source') {
+      setImageSourceMode(input.value === 'existing' ? 'existing' : 'upload');
+      return;
+    }
+    if (input.name !== 'image-file') return;
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+    const destination = dialog?.querySelector<HTMLInputElement>('[name="destination"]');
+    const file = input.files?.[0];
+    delete dialog?.dataset.url;
+    /* istanbul ignore else -- The static file input always has its matched destination field. */
+    if (destination && file) destination.value = suggestImageFilename(file.name);
+    /* istanbul ignore else -- Supported browsers expose object URLs for selected files. */
+    if (file && typeof URL.createObjectURL === 'function') {
+      clearImageObjectUrl();
+      imagePreviewObjectUrl = URL.createObjectURL(file);
+      setImagePreview(imagePreviewObjectUrl);
+    }
+    syncImagePrimaryButton();
+    setImageMessage('');
+  }
+
+  function openImageEditor(mode: 'insert' | 'replace'): void {
+    /* istanbul ignore next -- Image actions are available only while a block is active. */
+    if (!active) return;
+    const selectedImage = mode === 'replace' && active.querySelectorAll('img').length === 1
+      ? active.querySelector<HTMLImageElement>('img')
+      : null;
+    /* istanbul ignore next -- The contextual action is enabled only for one selected image. */
+    if (mode === 'replace' && !selectedImage) return;
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+    const form = dialog?.querySelector<HTMLFormElement>('form');
+    /* istanbul ignore next -- The dialog and form are static toolbar markup. */
+    if (!dialog || !form) return;
+    closeOpenMenus(false);
+    form.reset();
+    clearImageObjectUrl();
+    delete dialog.dataset.url;
+    dialog.dataset.mode = mode;
+    dialog.dataset.returnAction = mode === 'replace' ? 'replace-image' : 'toggle-insert';
+    const title = dialog.querySelector<HTMLElement>('h2')!;
+    const primary = form.querySelector<HTMLButtonElement>('[data-action="insert-image"]')!;
+    const sourceOptions = form.querySelector<HTMLFieldSetElement>('.image-source-options')!;
+    const alt = form.querySelector<HTMLInputElement>('[name="alt"]')!;
+    const label = mode === 'replace' ? 'Replace image' : 'Insert image';
+    dialog.setAttribute('aria-label', label);
+    title.textContent = label;
+    primary.textContent = label;
+    primary.setAttribute('aria-busy', 'false');
+    sourceOptions.hidden = mode !== 'replace';
+    const existingChoice = form.querySelector<HTMLInputElement>('[name="image-source"][value="existing"]')!;
+    existingChoice.disabled = mode !== 'replace';
+    setImageSourceMode('upload');
+    if (selectedImage) alt.value = selectedImage.alt;
+    if (selectedImage) setImagePreview(selectedImage.src);
+    else setImagePreview('');
+    setImageMessage('');
+    dialog.showModal();
+    form.querySelector<HTMLInputElement>('[name="image-file"]')?.focus();
+  }
+
+  function isImageEditorOpen(): boolean {
+    /* istanbul ignore next -- The dialog is static toolbar markup. */
+    return shadow.querySelector<HTMLDialogElement>('.image-editor')?.open ?? false;
+  }
+
+  function closeImageEditor(restoreTrigger = false): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+    const returnAction = dialog?.dataset.returnAction ?? 'toggle-insert';
+    /* istanbul ignore else -- Close is called for an open static dialog or as idempotent cleanup. */
+    if (dialog?.open) dialog.close();
+    clearImageObjectUrl();
+    if (!restoreTrigger) return;
+    const trigger = toolbar.querySelector<HTMLButtonElement>(`[data-action="${returnAction}"]`);
+    /* istanbul ignore else -- The image trigger is static toolbar markup. */
+    if (trigger) {
+      setRovingControl(trigger);
+      trigger.focus({ preventScroll: true });
+    }
+  }
+
+  function clearImageObjectUrl(): void {
+    if (imagePreviewObjectUrl && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(imagePreviewObjectUrl);
+    imagePreviewObjectUrl = undefined;
+  }
+
+  function setImagePreview(src: string): void {
+    const preview = shadow.querySelector<HTMLImageElement>('[data-image-preview]');
+    const frame = preview?.closest<HTMLElement>('.image-preview');
+    /* istanbul ignore next -- The image preview is static dialog markup. */
+    if (!preview || !frame) return;
+    if (src) preview.src = src;
+    else preview.removeAttribute('src');
+    frame.hidden = !src;
+  }
+
+  function previewExistingImage(reference: string): void {
+    const marker = active?.getAttribute(MARKER_ATTRIBUTE);
+    const value = reference.trim();
+    if (!marker || !value) {
+      setImagePreview('');
+      return;
+    }
+    const query = new URLSearchParams({ marker, reference: value });
+    setImagePreview(`${imageUploadEndpoint(options.endpoint)}/preview?${query}`);
+  }
+
+  function setImageSourceMode(mode: 'existing' | 'upload'): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor')!;
+    const form = dialog.querySelector<HTMLFormElement>('form')!;
+    const uploadPanel = form.querySelector<HTMLElement>('[data-image-source-panel="upload"]')!;
+    const existingPanel = form.querySelector<HTMLElement>('[data-image-source-panel="existing"]')!;
+    const uploadChoice = form.querySelector<HTMLInputElement>('[name="image-source"][value="upload"]')!;
+    const existingChoice = form.querySelector<HTMLInputElement>('[name="image-source"][value="existing"]')!;
+    const file = form.querySelector<HTMLInputElement>('[name="image-file"]')!;
+    const destination = form.querySelector<HTMLInputElement>('[name="destination"]')!;
+    const reference = form.querySelector<HTMLInputElement>('[name="existing-reference"]')!;
+    const upload = form.querySelector<HTMLButtonElement>('[data-action="upload-image"]')!;
+    const existing = mode === 'existing' && dialog.dataset.mode === 'replace';
+    uploadChoice.checked = !existing;
+    existingChoice.checked = existing;
+    uploadPanel.hidden = existing;
+    existingPanel.hidden = !existing;
+    file.disabled = existing || Boolean(dialog.dataset.url);
+    destination.disabled = existing || Boolean(dialog.dataset.url);
+    reference.disabled = !existing;
+    upload.hidden = existing;
+    if (existing) previewExistingImage(reference.value);
+    syncImagePrimaryButton();
+    (existing ? reference : file).focus();
+  }
+
+  function imageSource(): string | undefined {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor')!;
+    const existing = dialog.querySelector<HTMLInputElement>('[name="image-source"][value="existing"]')!.checked;
+    const reference = dialog.querySelector<HTMLInputElement>('[name="existing-reference"]')!.value.trim();
+    return existing ? reference || undefined : dialog.dataset.url;
+  }
+
+  function syncImagePrimaryButton(): void {
+    const primary = shadow.querySelector<HTMLButtonElement>('.image-editor [data-action="insert-image"]')!;
+    if (primary.getAttribute('aria-busy') !== 'true') primary.disabled = !imageSource();
+  }
+
+  function setImageMessage(message: string): void {
+    const node = shadow.querySelector<HTMLElement>('.image-message');
+    /* istanbul ignore else -- The message is static dialog markup. */
+    if (node) node.textContent = message;
+  }
+
+  function setImageBusy(busy: boolean): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor')!;
+    const upload = dialog.querySelector<HTMLButtonElement>('[data-action="upload-image"]')!;
+    const primary = dialog.querySelector<HTMLButtonElement>('[data-action="insert-image"]')!;
+    const cancel = dialog.querySelector<HTMLButtonElement>('[data-action="cancel-image"]')!;
+    upload.disabled = busy || Boolean(dialog.dataset.url);
+    upload.setAttribute('aria-busy', String(busy));
+    primary.disabled = busy || !imageSource();
+    primary.setAttribute('aria-busy', String(busy));
+    cancel.disabled = busy;
+  }
+
+  async function uploadImage(): Promise<void> {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+    const form = dialog?.querySelector<HTMLFormElement>('form');
+    /* istanbul ignore next -- Upload is available only inside the static image form. */
+    if (!dialog || !form || !form.reportValidity()) return;
+    const fileInput = form.querySelector<HTMLInputElement>('[name="image-file"]');
+    const destination = form.querySelector<HTMLInputElement>('[name="destination"]');
+    const file = fileInput?.files?.[0];
+    /* istanbul ignore next -- The required file input is checked by reportValidity. */
+    if (!file || !destination) return;
+    setImageBusy(true);
+    setImageMessage('Uploading image...');
+    try {
+      const response = await fetch(imageUploadEndpoint(options.endpoint), {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          'X-Astro-Wysiwyg-Filename': destination.value.trim(),
+        },
+        body: file,
+      });
+      const body = await response.json() as MediaUploadResponse;
+      /* istanbul ignore next -- The endpoint supplies an error for rejected or incomplete responses. */
+      if (!response.ok || !body.uploaded || !body.url) {
+        throw new Error(body.error ?? 'The image could not be uploaded.');
+      }
+      dialog.dataset.url = body.url;
+      fileInput.disabled = true;
+      destination.disabled = true;
+      syncImagePrimaryButton();
+      const nextAction = dialog.dataset.mode === 'replace'
+        ? 'Replace the active image.'
+        : 'Insert it after the active block.';
+      setImageMessage(`Uploaded to ${body.url}. ${nextAction}`);
+      setStatus('Image uploaded');
+    } catch (error) {
+      /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
+      const message = error instanceof Error ? error.message : 'The image could not be uploaded.';
+      setImageMessage(message);
+      setStatus(message, true);
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  async function applyImage(): Promise<void> {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
+    const altInput = dialog?.querySelector<HTMLInputElement>('[name="alt"]');
+    const src = imageSource();
+    /* istanbul ignore next -- Apply is enabled only after a source is selected. */
+    if (!dialog || !altInput || !src || !altInput.reportValidity()) return;
+    const replacing = dialog.dataset.mode === 'replace';
+    const primary = dialog.querySelector<HTMLButtonElement>('[data-action="insert-image"]')!;
+    setImageBusy(true);
+    const target = await structuralTarget();
+    if (!target) {
+      setImageBusy(false);
+      return;
+    }
+    setImageMessage(replacing ? 'Replacing image...' : 'Inserting image...');
+    try {
+      const response = await fetch(options.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          marker: target.marker,
+          operation: replacing ? 'replace-image' : 'insert-image-after',
+          src,
+          alt: altInput.value,
+        }),
+      });
+      const body = await response.json() as SaveResponse;
+      /* istanbul ignore next -- The endpoint always supplies an error for rejected requests. */
+      if (!response.ok || !body.marker) {
+        throw new Error(body.error ?? `The image could not be ${replacing ? 'replaced' : 'inserted'}.`);
+      }
+
+      if (replacing) {
+        const image = target.element.querySelector<HTMLImageElement>('img');
+        /* istanbul ignore next -- Replace is exposed only for a block with one image. */
+        if (!image) throw new Error('The selected image is no longer available.');
+        image.src = src.startsWith('/')
+          ? src
+          : `${imageUploadEndpoint(options.endpoint)}/preview?${new URLSearchParams({ marker: body.marker, reference: src })}`;
+        image.alt = altInput.value.trim();
+        target.element.setAttribute(MARKER_ATTRIBUTE, body.marker);
+        checkpoint(target.element);
+        closeImageEditor();
+        updateStructureButtons();
+        setStatus('Image replaced');
+        return;
+      }
+
+      const paragraph = document.createElement('p');
+      const image = document.createElement('img');
+      image.src = src;
+      image.alt = altInput.value.trim();
+      paragraph.append(image);
+      paragraph.setAttribute(MARKER_ATTRIBUTE, body.marker);
+      closeImageEditor();
+      /* istanbul ignore else -- Detached structural recovery is shared with the tested paragraph insert path. */
+      if (target.element.isConnected) {
+        target.element.after(paragraph);
+        await activate(paragraph);
+      } else {
+        rememberInsertedBlock(body.marker, { html: paragraph.innerHTML, tag: 'p' });
+        active = null;
+        await restoreActiveSession();
+      }
+      setStatus('Image inserted');
+    } catch (error) {
+      /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
+      const message = error instanceof Error ? error.message : `The image could not be ${replacing ? 'replaced' : 'inserted'}.`;
+      setImageMessage(message);
+      setStatus(message, true);
+    } finally {
+      primary.setAttribute('aria-busy', 'false');
+      setImageBusy(false);
+    }
+  }
+
+  function onVideoFormChange(input: HTMLInputElement): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    if (input.name === 'video-file') {
+      const file = input.files?.[0];
+      const destination = dialog.querySelector<HTMLInputElement>('[name="video-destination"]')!;
+      delete dialog.dataset.url;
+      if (file) destination.value = suggestVideoFilename(file.name);
+      if (file && typeof URL.createObjectURL === 'function') {
+        clearVideoObjectUrl();
+        videoPreviewObjectUrl = URL.createObjectURL(file);
+        const preview = dialog.querySelector<HTMLVideoElement>('[data-video-preview]')!;
+        preview.src = videoPreviewObjectUrl;
+        preview.hidden = false;
+      }
+      setVideoMessage('');
+    }
+    validateVideoOptions();
+    syncVideoPrimaryButton();
+  }
+
+  function openVideoEditor(): void {
+    /* istanbul ignore next -- The Insert menu is available only while a block is active. */
+    if (!active) return;
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const form = dialog.querySelector<HTMLFormElement>('form')!;
+    closeOpenMenus(false);
+    form.reset();
+    clearVideoObjectUrl();
+    delete dialog.dataset.url;
+    dialog.querySelector<HTMLVideoElement>('[data-video-preview]')!.hidden = true;
+    const upload = dialog.querySelector<HTMLButtonElement>('[data-action="upload-video"]')!;
+    const insert = dialog.querySelector<HTMLButtonElement>('[data-action="insert-video"]')!;
+    upload.disabled = false;
+    upload.setAttribute('aria-busy', 'false');
+    insert.disabled = true;
+    insert.setAttribute('aria-busy', 'false');
+    validateVideoOptions();
+    setVideoMessage('');
+    dialog.showModal();
+    dialog.querySelector<HTMLInputElement>('[name="video-file"]')!.focus();
+  }
+
+  function isVideoEditorOpen(): boolean {
+    /* istanbul ignore next -- The toolbar template always includes the video dialog. */
+    return shadow.querySelector<HTMLDialogElement>('.video-editor')?.open ?? false;
+  }
+
+  function closeVideoEditor(restoreTrigger = false): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor');
+    if (dialog?.open) dialog.close();
+    clearVideoObjectUrl();
+    if (!restoreTrigger) return;
+    const trigger = toolbar.querySelector<HTMLButtonElement>('[data-action="toggle-insert"]');
+    /* istanbul ignore else -- The toolbar template always includes the Insert trigger. */
+    if (trigger) {
+      setRovingControl(trigger);
+      trigger.focus({ preventScroll: true });
+    }
+  }
+
+  function clearVideoObjectUrl(): void {
+    if (videoPreviewObjectUrl && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(videoPreviewObjectUrl);
+    }
+    videoPreviewObjectUrl = undefined;
+  }
+
+  function validateVideoOptions(): boolean {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const controls = dialog.querySelector<HTMLInputElement>('[name="video-controls"]')!;
+    const muted = dialog.querySelector<HTMLInputElement>('[name="video-muted"]')!;
+    const autoplay = dialog.querySelector<HTMLInputElement>('[name="video-autoplay"]')!;
+    controls.setCustomValidity(controls.checked ? '' : 'Native video controls are required.');
+    autoplay.setCustomValidity(autoplay.checked && !muted.checked ? 'Autoplay requires muted playback.' : '');
+    return controls.checkValidity() && autoplay.checkValidity();
+  }
+
+  function setVideoMessage(message: string): void {
+    shadow.querySelector<HTMLElement>('.video-message')!.textContent = message;
+  }
+
+  function syncVideoPrimaryButton(): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const insert = dialog.querySelector<HTMLButtonElement>('[data-action="insert-video"]')!;
+    if (insert.getAttribute('aria-busy') !== 'true') insert.disabled = !dialog.dataset.url;
+  }
+
+  function setVideoBusy(busy: boolean): void {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const upload = dialog.querySelector<HTMLButtonElement>('[data-action="upload-video"]')!;
+    const insert = dialog.querySelector<HTMLButtonElement>('[data-action="insert-video"]')!;
+    const cancel = dialog.querySelector<HTMLButtonElement>('[data-action="cancel-video"]')!;
+    upload.disabled = busy || Boolean(dialog.dataset.url);
+    upload.setAttribute('aria-busy', String(busy));
+    insert.disabled = busy || !dialog.dataset.url;
+    insert.setAttribute('aria-busy', String(busy));
+    cancel.disabled = busy;
+  }
+
+  async function uploadVideo(): Promise<void> {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const form = dialog.querySelector<HTMLFormElement>('form')!;
+    if (!validateVideoOptions() || !form.reportValidity()) return;
+    const fileInput = form.querySelector<HTMLInputElement>('[name="video-file"]')!;
+    const destination = form.querySelector<HTMLInputElement>('[name="video-destination"]')!;
+    const file = fileInput.files?.[0];
+    /* istanbul ignore next -- The required file is checked by reportValidity. */
+    if (!file) return;
+    setVideoBusy(true);
+    setVideoMessage('Uploading video...');
+    try {
+      const response = await fetch(videoUploadEndpoint(options.endpoint), {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          'X-Astro-Wysiwyg-Filename': destination.value.trim(),
+        },
+        body: file,
+      });
+      const body = await response.json() as MediaUploadResponse;
+      if (!response.ok || !body.uploaded || !body.url) {
+        throw new Error(body.error ?? 'The video could not be uploaded.');
+      }
+      dialog.dataset.url = body.url;
+      fileInput.disabled = true;
+      destination.disabled = true;
+      syncVideoPrimaryButton();
+      setVideoMessage(`Uploaded to ${body.url}. Insert it after the active block.`);
+      setStatus('Video uploaded');
+    } catch (error) {
+      /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
+      const message = error instanceof Error ? error.message : 'The video could not be uploaded.';
+      setVideoMessage(message);
+      setStatus(message, true);
+    } finally {
+      setVideoBusy(false);
+    }
+  }
+
+  async function insertVideo(): Promise<void> {
+    const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
+    const form = dialog.querySelector<HTMLFormElement>('form')!;
+    const src = dialog.dataset.url;
+    if (!src || !validateVideoOptions() || !form.reportValidity()) return;
+    const target = await structuralTarget();
+    if (!target) return;
+    setVideoBusy(true);
+    setVideoMessage('Inserting video...');
+    const value = <T extends HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(name: string): T => (
+      form.querySelector<T>(`[name="${name}"]`)!
+    );
+    const request = {
+      marker: target.marker,
+      operation: 'insert-video-after',
+      src,
+      label: value<HTMLInputElement>('video-label').value,
+      description: value<HTMLTextAreaElement>('video-description').value,
+      poster: value<HTMLInputElement>('video-poster').value.trim() || undefined,
+      controls: value<HTMLInputElement>('video-controls').checked,
+      preload: value<HTMLSelectElement>('video-preload').value,
+      muted: value<HTMLInputElement>('video-muted').checked,
+      loop: value<HTMLInputElement>('video-loop').checked,
+      autoplay: value<HTMLInputElement>('video-autoplay').checked,
+    };
+    try {
+      const response = await fetch(options.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const body = await response.json() as SaveResponse;
+      if (!response.ok || !body.marker) throw new Error(body.error ?? 'The video could not be inserted.');
+
+      const figure = document.createElement('figure');
+      const video = document.createElement('video');
+      video.controls = true;
+      video.preload = request.preload as 'auto' | 'metadata' | 'none';
+      video.setAttribute('aria-label', request.label.trim());
+      video.toggleAttribute('muted', request.muted);
+      video.toggleAttribute('loop', request.loop);
+      video.toggleAttribute('autoplay', request.autoplay);
+      video.setAttribute('playsinline', '');
+      if (request.poster) video.poster = request.poster;
+      const source = document.createElement('source');
+      source.src = src;
+      source.type = 'video/mp4';
+      const download = document.createElement('a');
+      download.href = src;
+      download.textContent = `Download ${request.label.trim()}`;
+      video.append(source, download, '.');
+      const caption = document.createElement('figcaption');
+      caption.textContent = request.description.trim();
+      figure.append(video, caption);
+      closeVideoEditor();
+      if (target.element.isConnected) target.element.after(figure);
+      setStatus('Video inserted');
+    } catch (error) {
+      /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
+      const message = error instanceof Error ? error.message : 'The video could not be inserted.';
+      setVideoMessage(message);
+      setStatus(message, true);
+    } finally {
+      setVideoBusy(false);
+    }
   }
 
   function onToolbarClick(event: Event): void {
@@ -547,23 +1299,65 @@ export function startEditor(options: EditorOptions): void {
       closeFrontmatterEditor(true);
       return;
     }
+    if (action === 'cancel-image') {
+      closeImageEditor(true);
+      return;
+    }
+    if (action === 'upload-image') {
+      void uploadImage();
+      return;
+    }
+    if (action === 'insert-image') {
+      void applyImage();
+      return;
+    }
+    if (action === 'cancel-video') {
+      closeVideoEditor(true);
+      return;
+    }
+    if (action === 'upload-video') {
+      void uploadVideo();
+      return;
+    }
+    if (action === 'insert-video') {
+      void insertVideo();
+      return;
+    }
     if (!active) return;
+    if (action === 'toggle-text-style') {
+      toggleMenu('text-style-menu');
+      return;
+    }
+    if (action === 'toggle-insert') {
+      toggleMenu('insert-menu');
+      return;
+    }
     const command = button.dataset.command;
     const tag = button.dataset.tag;
     const list = button.dataset.list;
     if (command) runInlineCommand(command);
     else if (tag) changeBlockTag(tag);
     else if (list === 'ul' || list === 'ol') changeList(list);
-    else if (button.dataset.action === 'undo') undoEdit();
-    else if (button.dataset.action === 'add-block') void addBlockAfter();
-    else if (button.dataset.action === 'delete-block') void deleteBlock();
-    else if (button.dataset.action === 'link') openLinkEditor();
-    else if (button.dataset.action === 'apply-link') applyLink();
-    else if (button.dataset.action === 'remove-link') removeLink();
-    else if (button.dataset.action === 'cancel-link') closeLinkEditor();
-    else if (button.dataset.action === 'save') queueSave(active);
+    else if (action === 'undo') undoEdit();
+    else if (action === 'add-block') void addBlockAfter();
+    else if (action === 'open-image') {
+      openImageEditor('insert');
+      return;
+    } else if (action === 'replace-image') {
+      openImageEditor('replace');
+      return;
+    } else if (action === 'open-video') {
+      openVideoEditor();
+      return;
+    } else if (action === 'delete-block') void deleteBlock();
+    else if (action === 'link') openLinkEditor();
+    else if (action === 'apply-link') applyLink();
+    else if (action === 'remove-link') removeLink();
+    else if (action === 'cancel-link') closeLinkEditor(true);
+    else if (action === 'save') queueSave(active);
     /* istanbul ignore else -- Remaining toolbar actions are inert by design. */
-    else if (button.dataset.action === 'done') void finishEditing();
+    else if (action === 'done') void finishEditing();
+    if (button.closest('[role="menu"]')) closeMenu(button.closest<HTMLElement>('[role="menu"]')!, true);
   }
 
   async function structuralTarget(): Promise<{ element: HTMLElement; marker: string } | undefined> {
@@ -607,7 +1401,7 @@ export function startEditor(options: EditorOptions): void {
         target.element.after(paragraph);
         await activate(paragraph);
       } else {
-        rememberInsertedBlock(body.marker);
+        rememberInsertedBlock(body.marker, { html: 'New paragraph', tag: 'p' });
         active = null;
         await restoreActiveSession();
       }
@@ -653,11 +1447,10 @@ export function startEditor(options: EditorOptions): void {
     }
   }
 
-  function rememberInsertedBlock(token: string): void {
+  function rememberInsertedBlock(token: string, inserted: EditSnapshot): void {
     const marker = decodeClientMarker(token);
     /* istanbul ignore next -- Successful insert responses contain a server-validated marker. */
     if (!marker) return;
-    const inserted = { html: 'New paragraph', tag: 'p' };
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({
         pathname: location.pathname,
@@ -678,10 +1471,46 @@ export function startEditor(options: EditorOptions): void {
     const marker = decodeClientMarker(active?.getAttribute(MARKER_ATTRIBUTE) ?? null);
     const disabled = !marker || marker.format === 'frontmatter';
     for (const button of toolbar.querySelectorAll<HTMLButtonElement>(
-      '[data-action="add-block"], [data-action="delete-block"]',
+      '[data-action="toggle-insert"], [data-action="add-block"], [data-action="delete-block"]',
     )) {
       button.disabled = disabled;
     }
+    const replace = toolbar.querySelector<HTMLButtonElement>('[data-action="replace-image"]')!;
+    const canReplace = !disabled && active?.querySelectorAll('img').length === 1;
+    replace.hidden = !canReplace;
+    replace.disabled = !canReplace;
+    /* istanbul ignore next -- Reinitializes defensively if a focused structural action becomes unavailable. */
+    if (lastToolbarControl?.disabled) initializeToolbarFocus();
+  }
+
+  function updateControlStates(): void {
+    const tag = active?.localName ?? 'p';
+    const labels: Record<string, string> = {
+      p: 'Paragraph', h1: 'Heading 1', h2: 'Heading 2', h3: 'Heading 3',
+      h4: 'Heading 4', h5: 'Heading 5', h6: 'Heading 6', ul: 'Paragraph', ol: 'Paragraph',
+    };
+    const style = labels[tag] ?? 'Paragraph';
+    const styleButton = toolbar.querySelector<HTMLButtonElement>('[data-action="toggle-text-style"]');
+    const styleLabel = styleButton?.querySelector<HTMLElement>('.style-label');
+    /* istanbul ignore else -- The current style label is static toolbar markup. */
+    if (styleLabel) styleLabel.textContent = style;
+    styleButton?.setAttribute('aria-label', `Text style: ${style}`);
+
+    const pressed = (selector: string, value: boolean): void => {
+      toolbar.querySelector<HTMLButtonElement>(selector)?.setAttribute('aria-pressed', String(value));
+    };
+    let bold = false;
+    let italic = false;
+    try {
+      bold = Boolean(active && document.queryCommandState('bold'));
+      italic = Boolean(active && document.queryCommandState('italic'));
+    } catch {
+      // Browsers without queryCommandState still expose the controls as unpressed.
+    }
+    pressed('[data-command="bold"]', bold);
+    pressed('[data-command="italic"]', italic);
+    pressed('[data-list="ul"]', tag === 'ul');
+    pressed('[data-list="ol"]', tag === 'ol');
   }
 
   function findFrontmatterContextMarker(): string | undefined {
@@ -904,6 +1733,8 @@ export function startEditor(options: EditorOptions): void {
   function openLinkEditor(): void {
     /* istanbul ignore next -- Link actions require an active block. */
     if (!active) return;
+    closeOpenMenus(false);
+    hideOpenTooltip();
     const selection = getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
     if (!range || !active.contains(range.commonAncestorContainer)) {
@@ -924,10 +1755,14 @@ export function startEditor(options: EditorOptions): void {
     /* istanbul ignore next -- These controls are static toolbar markup. */
     if (!editor || !input || !remove) return;
     editor.hidden = false;
+    toolbar.querySelector<HTMLButtonElement>('[data-action="link"]')?.setAttribute('aria-expanded', 'true');
     input.value = editingLink?.getAttribute('href') ?? '';
     remove.disabled = !editingLink;
     setLinkError('');
     positionToolbar();
+    const trigger = toolbar.querySelector<HTMLButtonElement>('[data-action="link"]');
+    /* istanbul ignore else -- The link trigger is static toolbar markup. */
+    if (trigger) positionSurface(editor, trigger);
     input.focus();
     input.select();
   }
@@ -981,14 +1816,21 @@ export function startEditor(options: EditorOptions): void {
     }
   }
 
-  function closeLinkEditor(): void {
+  function closeLinkEditor(restoreTrigger = false): void {
     const editor = toolbar.querySelector<HTMLElement>('.link-editor');
+    const trigger = toolbar.querySelector<HTMLButtonElement>('[data-action="link"]');
     /* istanbul ignore else -- The link editor is static toolbar markup. */
     if (editor) editor.hidden = true;
+    trigger?.setAttribute('aria-expanded', 'false');
     linkRange = undefined;
     editingLink = undefined;
     setLinkError('');
-    active?.focus({ preventScroll: true });
+    if (restoreTrigger && trigger) {
+      setRovingControl(trigger);
+      trigger.focus({ preventScroll: true });
+    } else {
+      active?.focus({ preventScroll: true });
+    }
     positionToolbar();
   }
 
@@ -1061,6 +1903,7 @@ export function startEditor(options: EditorOptions): void {
     setStatus('Unsaved');
     rememberActiveSession();
     updateUndoButton();
+    updateControlStates();
     queueSave(active);
   }
 
@@ -1075,6 +1918,7 @@ export function startEditor(options: EditorOptions): void {
     window.clearTimeout(saveTimer);
     rememberActiveSession();
     updateUndoButton();
+    updateControlStates();
     if (preferences.autosave) {
       const edited = active;
       saveTimer = window.setTimeout(() => queueSave(edited), options.saveDelay);
@@ -1128,6 +1972,7 @@ export function startEditor(options: EditorOptions): void {
     window.clearTimeout(saveTimer);
     rememberActiveSession();
     updateUndoButton();
+    updateControlStates();
     if (scheduleSave && preferences.autosave) {
       const edited = active;
       saveTimer = window.setTimeout(() => queueSave(edited), options.saveDelay);
@@ -1139,6 +1984,8 @@ export function startEditor(options: EditorOptions): void {
     /* istanbul ignore next -- Finish is exposed only while a block is active. */
     if (!active) return;
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
+    if (isImageEditorOpen()) closeImageEditor();
+    if (isVideoEditorOpen()) closeVideoEditor();
     if (isLinkEditorOpen()) closeLinkEditor();
     window.clearTimeout(saveTimer);
     const finished = active;
@@ -1154,6 +2001,7 @@ export function startEditor(options: EditorOptions): void {
     active = null;
     undoHistory = [];
     updateUndoButton();
+    updateControlStates();
     try {
       sessionStorage.removeItem(SESSION_KEY);
     } catch {
@@ -1271,11 +2119,29 @@ export function startEditor(options: EditorOptions): void {
       : Math.min(window.innerHeight - toolbarRect.height - 8, rect.bottom + 8);
     const left = Math.max(8, Math.min(rect.left, window.innerWidth - toolbarRect.width - 8));
     toolbar.style.transform = `translate(${Math.round(left)}px, ${Math.round(Math.max(8, top))}px)`;
+    positionOpenSurfaces();
+  }
+
+  function positionOpenSurfaces(): void {
+    for (const surface of toolbar.querySelectorAll<HTMLElement>('.floating-surface:not([hidden])')) {
+      const trigger = surface.getAttribute('role') === 'tooltip'
+        ? toolbar.querySelector<HTMLElement>(`[data-tooltip-owner="${surface.dataset.owner}"]`)
+        : toolbar.querySelector<HTMLElement>(`[aria-controls="${surface.id}"]`);
+      /* istanbul ignore else -- Every static floating surface has a matching trigger while open. */
+      if (trigger) positionSurface(surface, trigger, surface.getAttribute('role') === 'tooltip');
+    }
   }
 
   function setStatus(message: string, error = false): void {
     status.textContent = message;
     status.dataset.error = String(error);
+    const save = toolbar.querySelector<HTMLButtonElement>('[data-action="save"]');
+    const saving = message === 'Saving...';
+    /* istanbul ignore else -- Save is static toolbar markup. */
+    if (save) {
+      save.dataset.saving = String(saving);
+      save.setAttribute('aria-busy', String(saving));
+    }
   }
 }
 
@@ -1354,72 +2220,140 @@ function setCaretOffset(element: HTMLElement, offset = element.textContent!.leng
   element.focus({ preventScroll: true });
 }
 
-function toolbarMarkup(): string {
+export function toolbarMarkup(): string {
   return `
     <style>
       :host { all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; }
       [role="toolbar"] {
-        position: fixed; left: 0; top: 0; display: flex; align-items: center; gap: 3px;
-        max-width: calc(100vw - 16px); padding: 6px; overflow-x: auto; pointer-events: auto;
-        color: #f8fafc; background: #111827; border: 1px solid #475569; border-radius: 8px;
-        box-shadow: 0 6px 24px rgb(0 0 0 / 35%); font: 13px/1.2 ui-sans-serif, system-ui, sans-serif;
+        position: fixed; left: 0; top: 0; box-sizing: border-box; width: max-content;
+        max-width: calc(100vw - 16px); padding: 6px; overflow: visible; pointer-events: auto;
+        color: #f8fafc; color-scheme: dark; background: #111827; border: 1px solid #64748b;
+        border-radius: 9px; box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
+        font: 13px/1.25 ui-sans-serif, system-ui, sans-serif;
       }
-      button { min-width: 36px; min-height: 36px; padding: 6px 9px; color: inherit; background: #1f2937; border: 1px solid #64748b; border-radius: 5px; font: inherit; cursor: pointer; }
+      .toolbar-groups { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; max-width: 100%; }
+      .toolbar-group { display: flex; flex: 0 1 auto; flex-wrap: nowrap; gap: 3px; padding: 2px; border: 1px solid #475569; border-radius: 7px; }
+      .toolbar-group.format { flex-wrap: wrap; }
+      button {
+        display: inline-flex; box-sizing: border-box; min-width: 44px; min-height: 44px; align-items: center;
+        justify-content: center; gap: 7px; padding: 8px 10px; color: inherit; background: #1f2937;
+        border: 1px solid #64748b; border-radius: 5px; font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif;
+        cursor: pointer; touch-action: manipulation;
+      }
+      button.icon-only { width: 44px; padding: 8px; }
       button:hover { background: #334155; }
-      button.danger { color: #fecaca; border-color: #b91c1c; }
+      button[aria-pressed="true"], button[aria-expanded="true"] { background: #0f766e; border-color: #5eead4; }
+      button.danger { color: #fecaca; border: 2px solid #ef4444; border-radius: 3px; }
       button.danger:hover { background: #7f1d1d; }
-      button:disabled { opacity: .45; cursor: not-allowed; }
-      button:focus-visible, input:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 1px; }
-      .bold { font-weight: 700; } .italic { font-style: italic; }
-      .link-editor { display: flex; align-items: center; gap: 4px; }
-      .link-editor input { width: min(260px, 42vw); min-height: 34px; padding: 0 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
-      .link-error { max-width: 220px; color: #fecaca; font-size: 12px; }
-      .frontmatter-editor { width: min(420px, calc(100vw - 32px)); max-height: min(620px, calc(100vh - 32px)); padding: 16px; overflow-y: auto; color: #f8fafc; background: #111827; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 28px rgb(0 0 0 / 45%); pointer-events: auto; }
-      .frontmatter-editor::backdrop { background: rgb(15 23 42 / 65%); }
-      .frontmatter-editor h2 { margin: 0 0 12px; font: 600 17px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      button:disabled { opacity: .5; text-decoration: line-through; cursor: not-allowed; }
+      button:focus, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 2px; }
+      svg { display: block; flex: 0 0 20px; width: 20px; height: 20px; }
+      .floating-surface {
+        position: absolute; z-index: 2; box-sizing: border-box; max-width: calc(100vw - 16px);
+        color: #f8fafc; background: #111827; border: 1px solid #94a3b8; border-radius: 7px;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 45%); pointer-events: auto;
+      }
+      [role="menu"] { display: grid; width: 210px; gap: 3px; padding: 5px; }
+      [role="menu"] button { width: 100%; justify-content: flex-start; }
+      [role="menu"] .shortcut { margin-left: auto; color: #cbd5e1; font-size: 12px; }
+      [role="tooltip"] { width: max-content; max-width: min(240px, calc(100vw - 16px)); padding: 7px 9px; overflow-wrap: anywhere; }
+      .link-editor { display: grid; width: min(330px, calc(100vw - 16px)); gap: 7px; padding: 10px; }
+      .link-editor label { display: grid; gap: 5px; font-weight: 600; }
+      .link-editor input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 9px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      .link-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+      .link-error { overflow-wrap: anywhere; color: #fecaca; font-size: 12px; }
+      .frontmatter-editor, .image-editor, .video-editor { width: min(420px, calc(100vw - 32px)); max-height: min(620px, calc(100vh - 32px)); padding: 16px; overflow-y: auto; color: #f8fafc; background: #111827; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 28px rgb(0 0 0 / 45%); pointer-events: auto; }
+      .frontmatter-editor::backdrop, .image-editor::backdrop, .video-editor::backdrop { background: rgb(15 23 42 / 65%); }
+      .frontmatter-editor h2, .image-editor h2, .video-editor h2 { margin: 0 0 12px; font: 600 17px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      .image-editor form, .image-field, .image-source-panel { display: grid; gap: 9px; }
+      .image-field { gap: 5px; font-weight: 600; }
+      .image-field small { color: #cbd5e1; font-weight: 400; }
+      .image-field input:not([type="radio"]) { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      .image-source-options { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 10px; border: 1px solid #475569; border-radius: 5px; }
+      .image-source-options label { display: inline-flex; gap: 7px; min-height: 44px; align-items: center; }
+      .image-preview { display: grid; gap: 5px; margin: 0; }
+      .image-preview img { display: block; max-width: 100%; max-height: 220px; margin-inline: auto; object-fit: contain; border-radius: 5px; }
+      .image-preview figcaption { color: #cbd5e1; font-size: 12px; }
+      .image-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+      .image-message { min-height: 1.25em; overflow-wrap: anywhere; color: #fecaca; font-size: 12px; }
+      .video-editor form, .video-field { display: grid; gap: 7px; }
+      .video-field { font-weight: 600; }
+      .video-field small { color: #cbd5e1; font-weight: 400; }
+      .video-field :is(input:not([type="checkbox"]), select, textarea) { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      .video-field textarea { min-height: 78px; resize: vertical; }
+      .video-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin: 0; padding: 10px; border: 1px solid #475569; border-radius: 5px; }
+      .video-options label { display: inline-flex; gap: 7px; min-height: 44px; align-items: center; }
+      .video-options input { width: 24px; height: 24px; }
+      .video-preview { display: block; max-width: 100%; max-height: 220px; margin-inline: auto; }
+      .video-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+      .video-message { min-height: 1.25em; overflow-wrap: anywhere; color: #fecaca; font-size: 12px; }
       .frontmatter-fields { display: grid; gap: 9px; }
       .frontmatter-field { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 10px; }
       .frontmatter-field > span { overflow-wrap: anywhere; color: #cbd5e1; }
-      .frontmatter-field input:not([type="checkbox"]) { min-width: 0; min-height: 34px; padding: 0 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
-      .frontmatter-field input[type="checkbox"] { width: 20px; height: 20px; }
-      .frontmatter-actions { display: flex; align-items: center; gap: 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #475569; }
-      .frontmatter-message { color: #fecaca; font-size: 12px; }
-      .separator { width: 1px; height: 28px; margin: 0 2px; background: #64748b; }
-      [role="status"] { min-width: 54px; margin-inline: 5px; white-space: nowrap; color: #bbf7d0; }
-      [role="status"][data-error="true"] { max-width: 260px; color: #fecaca; white-space: normal; }
-      [hidden] { display: none; }
-      @media (forced-colors: active) { [role="toolbar"], button { border: 1px solid ButtonText; } }
+      .frontmatter-field input:not([type="checkbox"]) { min-width: 0; min-height: 44px; padding: 0 8px; color: #111827; background: #fff; border: 1px solid #94a3b8; border-radius: 5px; font: 14px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      .frontmatter-field input[type="checkbox"] { width: 24px; height: 24px; }
+      .frontmatter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #475569; }
+      .frontmatter-message { overflow-wrap: anywhere; color: #fecaca; font-size: 12px; }
+      [role="status"] { display: block; max-width: 100%; margin: 6px 5px 1px; overflow-wrap: anywhere; color: #bbf7d0; }
+      [role="status"][data-error="true"] { color: #fecaca; }
+      [hidden] { display: none !important; }
+      @media (forced-colors: active) {
+        [role="toolbar"], .toolbar-group, .floating-surface, button { border: 1px solid ButtonText; }
+        button[aria-pressed="true"], button[aria-expanded="true"] { outline: 2px solid Highlight; }
+        button.danger { border: 2px dashed ButtonText; }
+        button:disabled { opacity: 1; color: GrayText; }
+      }
     </style>
     <div role="toolbar" aria-label="Edit text" hidden>
-      <button type="button" data-action="undo" aria-label="Undo" title="Undo (Ctrl+Z)" disabled>↶</button>
-      <span class="separator" aria-hidden="true"></span>
-      <button type="button" class="bold" data-command="bold" aria-label="Bold" title="Bold (Ctrl+B)">B</button>
-      <button type="button" class="italic" data-command="italic" aria-label="Italic" title="Italic (Ctrl+I)">I</button>
-      <button type="button" data-action="link" aria-label="Link" title="Link (Ctrl+K)">Link</button>
-      <button type="button" data-list="ul" aria-label="Bullet list" title="Bullet list (Ctrl+Shift+8)">• List</button>
-      <button type="button" data-list="ol" aria-label="Numbered list" title="Numbered list (Ctrl+Shift+7)">1. List</button>
-      <span class="separator" aria-hidden="true"></span>
-      <button type="button" data-action="add-block" aria-label="Add block below">+ Block</button>
-      <button type="button" class="danger" data-action="delete-block" aria-label="Delete block">Delete</button>
-      <span class="link-editor" role="group" aria-label="Edit link" hidden>
-        <label><input type="text" inputmode="url" aria-label="Link URL" placeholder="https://example.com or /page" /></label>
-        <button type="button" data-action="apply-link" aria-label="Apply link">Apply</button>
-        <button type="button" data-action="remove-link" aria-label="Remove link">Remove</button>
-        <button type="button" data-action="cancel-link" aria-label="Cancel link">Cancel</button>
-        <span class="link-error" role="alert"></span>
-      </span>
-      <span class="separator" aria-hidden="true"></span>
-      <button type="button" data-tag="h1" aria-label="Heading 1" title="Heading 1 (Alt+1)">H1</button>
-      <button type="button" data-tag="h2" aria-label="Heading 2" title="Heading 2 (Alt+2)">H2</button>
-      <button type="button" data-tag="h3" aria-label="Heading 3" title="Heading 3 (Alt+3)">H3</button>
-      <button type="button" data-tag="h4" aria-label="Heading 4" title="Heading 4 (Alt+4)">H4</button>
-      <button type="button" data-tag="h5" aria-label="Heading 5" title="Heading 5 (Alt+5)">H5</button>
-      <button type="button" data-tag="h6" aria-label="Heading 6" title="Heading 6 (Alt+6)">H6</button>
-      <button type="button" data-tag="p" aria-label="Paragraph">P</button>
-      <span class="separator" aria-hidden="true"></span>
-      <button type="button" data-action="save">Save</button>
-      <button type="button" data-action="done">Done</button>
-      <span role="status" aria-live="polite">Editing</span>
+      <div class="toolbar-groups">
+        <div class="toolbar-group history" role="group" aria-label="History">
+          <button type="button" class="icon-only" data-toolbar-item data-action="undo" data-tooltip="Undo (Ctrl/Cmd+Z)" data-tooltip-owner="undo" aria-label="Undo" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+Z Meta+Z" disabled>${lucideIcon('undo-2')}</button>
+        </div>
+        <div class="toolbar-group block-type" role="group" aria-label="Block type">
+          <button type="button" data-toolbar-item data-action="toggle-text-style" aria-label="Text style: Paragraph" aria-haspopup="menu" aria-expanded="false" aria-controls="text-style-menu">${lucideIcon('type')}<span class="style-label">Paragraph</span></button>
+        </div>
+        <div class="toolbar-group format" role="group" aria-label="Format">
+          <button type="button" class="icon-only" data-toolbar-item data-command="bold" data-tooltip="Bold (Ctrl/Cmd+B)" data-tooltip-owner="bold" aria-label="Bold" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+B Meta+B" aria-pressed="false">${lucideIcon('bold')}</button>
+          <button type="button" class="icon-only" data-toolbar-item data-command="italic" data-tooltip="Italic (Ctrl/Cmd+I)" data-tooltip-owner="italic" aria-label="Italic" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+I Meta+I" aria-pressed="false">${lucideIcon('italic')}</button>
+          <button type="button" class="icon-only" data-toolbar-item data-action="link" data-tooltip="Link (Ctrl/Cmd+K)" data-tooltip-owner="link" aria-label="Link" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+K Meta+K" aria-expanded="false" aria-controls="link-editor">${lucideIcon('link')}</button>
+          <button type="button" class="icon-only" data-toolbar-item data-list="ul" data-tooltip="Bullet list (Ctrl/Cmd+Shift+8)" data-tooltip-owner="bullet-list" aria-label="Bullet list" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+Shift+8 Meta+Shift+8" aria-pressed="false">${lucideIcon('list')}</button>
+          <button type="button" class="icon-only" data-toolbar-item data-list="ol" data-tooltip="Numbered list (Ctrl/Cmd+Shift+7)" data-tooltip-owner="numbered-list" aria-label="Numbered list" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+Shift+7 Meta+Shift+7" aria-pressed="false">${lucideIcon('list-ordered')}</button>
+        </div>
+        <div class="toolbar-group structure" role="group" aria-label="Structure">
+          <button type="button" data-toolbar-item data-action="toggle-insert" aria-label="Insert" aria-haspopup="menu" aria-expanded="false" aria-controls="insert-menu">${lucideIcon('plus')}<span>Insert</span></button>
+          <button type="button" data-toolbar-item data-action="replace-image" aria-label="Replace image" hidden disabled>${lucideIcon('image-plus')}<span>Replace image</span></button>
+          <button type="button" class="danger" data-toolbar-item data-action="delete-block" aria-label="Delete block">${lucideIcon('trash-2')}<span>Delete</span></button>
+        </div>
+        <div class="toolbar-group session" role="group" aria-label="Session">
+          <button type="button" data-toolbar-item data-action="save" data-tooltip="Save (Ctrl/Cmd+S)" data-tooltip-owner="save" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+S Meta+S" aria-busy="false">${lucideIcon('save')}<span>Save</span></button>
+          <button type="button" data-toolbar-item data-action="done" data-tooltip="Done (Esc)" data-tooltip-owner="done" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Escape">${lucideIcon('check')}<span>Done</span></button>
+        </div>
+      </div>
+      <div id="text-style-menu" class="floating-surface" role="menu" aria-label="Text style" hidden>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="p">Paragraph</button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h1">Heading 1 <span class="shortcut">Alt+1</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h2">Heading 2 <span class="shortcut">Alt+2</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h3">Heading 3 <span class="shortcut">Alt+3</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h4">Heading 4 <span class="shortcut">Alt+4</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h5">Heading 5 <span class="shortcut">Alt+5</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-tag="h6">Heading 6 <span class="shortcut">Alt+6</span></button>
+      </div>
+      <div id="insert-menu" class="floating-surface" role="menu" aria-label="Insert" hidden>
+        <button type="button" role="menuitem" tabindex="-1" data-action="add-block">${lucideIcon('pilcrow')}<span>Paragraph below</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-action="open-image">${lucideIcon('image-plus')}<span>Image</span></button>
+        <button type="button" role="menuitem" tabindex="-1" data-action="open-video">${lucideIcon('video')}<span>Video</span></button>
+      </div>
+      <section id="link-editor" class="link-editor floating-surface" role="dialog" aria-label="Edit link" hidden>
+        <label for="astro-wysiwyg-link-url">Link URL<input id="astro-wysiwyg-link-url" type="text" inputmode="url" aria-describedby="link-error" placeholder="https://example.com or /page" /></label>
+        <div class="link-actions">
+          <button type="button" data-action="apply-link" aria-label="Apply link">Apply</button>
+          <button type="button" data-action="remove-link" aria-label="Remove link">Remove</button>
+          <button type="button" data-action="cancel-link" aria-label="Cancel link">Cancel</button>
+        </div>
+        <span id="link-error" class="link-error" role="alert"></span>
+      </section>
+      <span id="toolbar-tooltip" class="floating-surface" role="tooltip" hidden></span>
+      <span role="status" aria-live="polite" data-error="false">Editing</span>
     </div>
     <dialog class="frontmatter-editor" aria-label="Edit frontmatter">
       <h2>Frontmatter</h2>
@@ -1429,6 +2363,102 @@ function toolbarMarkup(): string {
         <button type="button" data-action="cancel-frontmatter">Cancel</button>
         <span class="frontmatter-message" role="alert"></span>
       </div>
+    </dialog>
+    <dialog class="image-editor" aria-label="Insert image">
+      <h2>Insert image</h2>
+      <form>
+        <fieldset class="image-source-options" hidden>
+          <legend>Replacement source</legend>
+          <label><input name="image-source" type="radio" value="upload" checked /> Upload new image</label>
+          <label><input name="image-source" type="radio" value="existing" disabled /> Existing project asset</label>
+        </fieldset>
+        <div class="image-source-panel" data-image-source-panel="upload">
+          <div class="image-field">
+            <label for="astro-wysiwyg-image-file">Image file</label>
+            <input id="astro-wysiwyg-image-file" name="image-file" type="file" accept=".png,.jpg,.jpeg,.gif,.webp" required aria-describedby="image-file-help" />
+            <small id="image-file-help">PNG, JPEG, GIF, or WebP, up to 5 MB.</small>
+          </div>
+          <div class="image-field">
+            <label for="astro-wysiwyg-image-destination">Destination name</label>
+            <input id="astro-wysiwyg-image-destination" name="destination" type="text" maxlength="120" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" required aria-describedby="image-destination-help" />
+            <small id="image-destination-help">Stored in the configured public image directory.</small>
+          </div>
+        </div>
+        <div class="image-source-panel" data-image-source-panel="existing" hidden>
+          <div class="image-field">
+            <label for="astro-wysiwyg-image-existing">Project asset reference</label>
+            <input id="astro-wysiwyg-image-existing" name="existing-reference" type="text" maxlength="1000" placeholder="/assets/photo.png or ../assets/photo.png" required disabled aria-describedby="image-existing-help" />
+            <small id="image-existing-help">Use a public URL path or a path relative to this source file.</small>
+          </div>
+        </div>
+        <div class="image-field">
+          <label for="astro-wysiwyg-image-alt">Alt text</label>
+          <input id="astro-wysiwyg-image-alt" name="alt" type="text" maxlength="300" required aria-describedby="image-alt-help" />
+          <small id="image-alt-help">Describe the image's purpose for people who cannot see it.</small>
+        </div>
+        <figure class="image-preview" hidden>
+          <img data-image-preview alt="Replacement preview" />
+          <figcaption>Preview of the image that will be used.</figcaption>
+        </figure>
+        <div class="image-actions">
+          <button type="button" data-action="upload-image" aria-busy="false">Upload image</button>
+          <button type="button" data-action="insert-image" aria-busy="false" disabled>Insert image</button>
+          <button type="button" data-action="cancel-image">Cancel</button>
+        </div>
+        <span class="image-message" role="alert" aria-live="polite"></span>
+      </form>
+    </dialog>
+    <dialog class="video-editor" aria-label="Insert video">
+      <h2>Insert video</h2>
+      <form>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-file">Video file</label>
+          <input id="astro-wysiwyg-video-file" name="video-file" type="file" accept="${VIDEO_ACCEPT}" required aria-describedby="video-file-help" />
+          <small id="video-file-help">H.264 MP4, up to 100 MB.</small>
+        </div>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-destination">Destination name</label>
+          <input id="astro-wysiwyg-video-destination" name="video-destination" type="text" maxlength="120" pattern="[A-Za-z0-9][A-Za-z0-9._-]*\\.mp4" required aria-describedby="video-destination-help" />
+          <small id="video-destination-help">Stored in the configured public video directory.</small>
+        </div>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-label">Accessible label</label>
+          <input id="astro-wysiwyg-video-label" name="video-label" type="text" maxlength="300" required aria-describedby="video-label-help" />
+          <small id="video-label-help">Name the video's purpose for assistive technology.</small>
+        </div>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-description">Visible description</label>
+          <textarea id="astro-wysiwyg-video-description" name="video-description" maxlength="1000" required aria-describedby="video-description-help"></textarea>
+          <small id="video-description-help">Describe the video beside the native player. Add captions in source when spoken content requires them.</small>
+        </div>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-poster">Poster image path (optional)</label>
+          <input id="astro-wysiwyg-video-poster" name="video-poster" type="text" maxlength="1000" placeholder="/assets/poster.png" aria-describedby="video-poster-help" />
+          <small id="video-poster-help">Use an existing PNG, JPEG, GIF, or WebP file from Astro's public directory.</small>
+        </div>
+        <div class="video-field">
+          <label for="astro-wysiwyg-video-preload">Preload</label>
+          <select id="astro-wysiwyg-video-preload" name="video-preload">
+            <option value="none">None</option>
+            <option value="metadata" selected>Metadata</option>
+            <option value="auto">Auto</option>
+          </select>
+        </div>
+        <fieldset class="video-options">
+          <legend>Playback</legend>
+          <label><input name="video-controls" type="checkbox" required checked /> Controls</label>
+          <label><input name="video-muted" type="checkbox" /> Muted</label>
+          <label><input name="video-loop" type="checkbox" /> Loop</label>
+          <label><input name="video-autoplay" type="checkbox" /> Autoplay</label>
+        </fieldset>
+        <video class="video-preview" data-video-preview controls muted aria-label="Selected video preview" hidden></video>
+        <div class="video-actions">
+          <button type="button" data-action="upload-video" aria-busy="false">Upload video</button>
+          <button type="button" data-action="insert-video" aria-busy="false" disabled>Insert video</button>
+          <button type="button" data-action="cancel-video">Cancel</button>
+        </div>
+        <span class="video-message" role="alert" aria-live="polite"></span>
+      </form>
     </dialog>
   `;
 }

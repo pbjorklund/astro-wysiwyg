@@ -30,17 +30,21 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "dev": "npm run build && cd demo && ../node_modules/.bin/astro dev",
+    "demo:build": "cd demo && ../node_modules/.bin/astro build",
     "test": "npm run test:unit",
     "test:unit": "node --test --experimental-strip-types tests/*.test.ts",
     "test:e2e": "npm run build && playwright test",
     "test:coverage:server": "node -e \"require('node:fs').rmSync('.coverage', { recursive: true, force: true })\" && c8 --all --include=src/**/*.ts --exclude=src/client.ts --reporter=json --reports-dir=.coverage/server node --test --experimental-strip-types tests/*.test.ts",
     "test:coverage": "npm run test:coverage:server && npm run test:e2e && node tests/report-coverage.mjs",
-    "check:unit": "npm run test:unit && npm run build",
-    "check": "npm run test:coverage",
+    "check:demo": "npm run demo:build && node tests/check-demo-production.mjs",
+    "check:unit": "npm run test:unit && npm run build && npm run check:demo",
+    "check": "npm run test:coverage && npm run check:demo",
     "prepack": "npm run check:unit"
   },
   "keywords": [
@@ -65,6 +69,7 @@
     "turndown": "^7.2.2"
   },
   "devDependencies": {
+    "@astrojs/mdx": "^6.0.3",
     "@playwright/test": "^1.60.0",
     "@types/istanbul-lib-coverage": "^2.0.6",
     "@types/node": "^24.10.0",

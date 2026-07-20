@@ -4,7 +4,7 @@ import { createMarker, encodeMarker } from './marker.ts';
 
 const BLOCK_TAGS = new Set(MARKDOWN_EDITABLE_BLOCK_TAGS);
 const TURNDOWN_INLINE_TAGS = new Set([
-  'a', 'b', 'br', 'code', 'em', 'i', 'li', 'p', 'strong',
+  'a', 'b', 'br', 'code', 'em', 'i', 'img', 'li', 'p', 'strong',
 ]);
 
 interface HastPosition {
@@ -70,7 +70,16 @@ function isRoundTripSafeInlineNode(node: HastNode, source: string): boolean {
   const tag = node.tagName.toLowerCase();
   if (!TURNDOWN_INLINE_TAGS.has(tag)) return false;
   if (tag === 'a' && !isRoundTripSafeLink(node, source)) return false;
+  if (tag === 'img') return isRoundTripSafeImage(node, source);
   return (node.children ?? []).every((child) => isRoundTripSafeInlineNode(child, source));
+}
+
+function isRoundTripSafeImage(node: HastNode, source: string): boolean {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
+  if (start === undefined || end === undefined) return false;
+  const original = source.slice(start, end);
+  return original.startsWith('![') && /^!\[[\s\S]*\]\([^\r\n]+\)$/.test(original);
 }
 
 function isRoundTripSafeLink(node: HastNode, source: string): boolean {

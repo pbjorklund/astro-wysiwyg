@@ -74,6 +74,10 @@ test('toolbar app renders settings, updates toggles, opens frontmatter, and foll
   const toolbarWindow = canvas.querySelector<HTMLElement>('astro-dev-toolbar-window');
   assert.ok(toolbarWindow);
   assert.equal((toolbarWindow as HTMLElement & { placement: string }).placement, 'bottom-center');
+  const mark = toolbarWindow.querySelector<SVGElement>('.mark svg');
+  assert.equal(mark?.getAttribute('data-icon'), 'file-pen-line');
+  assert.equal(mark?.getAttribute('aria-hidden'), 'true');
+  assert.equal(toolbarWindow.querySelector('h1')?.textContent, 'Page editor');
   const toggles = [...canvas.querySelectorAll<HTMLElement>('astro-dev-toolbar-toggle')]
     .map((toggle) => (toggle as HTMLElement & { input: HTMLInputElement }).input);
   assert.equal(toggles.length, 3);

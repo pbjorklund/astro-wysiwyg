@@ -1,0 +1,16 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout title="Interactive content guards">
+  <h1>Interactive content guards</h1>
+  <p>Editing native controls must not trigger their normal application actions.</p>
+  <form>
+    <button type="submit">Editable button</button>
+  </form>
+  <label for="editable-checkbox">Editable label</label>
+  <input id="editable-checkbox" type="checkbox" />
+  <details>
+    <summary>Editable summary</summary>
+    <p>Disclosure content.</p>
+  </details>
+</BaseLayout>

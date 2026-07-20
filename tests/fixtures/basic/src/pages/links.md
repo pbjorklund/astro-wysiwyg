@@ -1,5 +1,0 @@
----
-title: Link fixture
-layout: ../layouts/Layout.astro
----
-Link this phrase in the editor.

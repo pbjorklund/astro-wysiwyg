@@ -1,4 +1,5 @@
 import { defineToolbarApp } from 'astro/toolbar';
+import { lucideIcon } from './lucide-icons.ts';
 import {
   FRONTMATTER_EVENT,
   type EditorPreferences,
@@ -40,7 +41,8 @@ export default defineToolbarApp({
         :host { color-scheme: dark; }
         header { display: flex; align-items: center; gap: 10px; }
         h1 { margin: 0; color: #fff; font: 600 22px/1.2 system-ui, sans-serif; }
-        .mark { display: grid; place-items: center; width: 32px; height: 32px; color: #13151a; background: #c4b5fd; border-radius: 8px; font: 700 19px/1 system-ui, sans-serif; }
+        .mark { display: grid; place-items: center; width: 36px; height: 36px; color: #13151a; background: #c4b5fd; border-radius: 8px; }
+        .mark svg { width: 22px; height: 22px; }
         .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; }
         .setting-row + .setting-row { border-top: 1px solid #343841; }
         h2 { margin: 0 0 5px; color: #fff; font: 400 16px/1.3 system-ui, sans-serif; }
@@ -51,7 +53,7 @@ export default defineToolbarApp({
         button:focus-visible { outline: 3px solid #c4b5fd; outline-offset: 2px; }
         footer { margin-top: 8px; padding-top: 14px; border-top: 1px solid #343841; color: #8d929c; font: 13px/1.4 system-ui, sans-serif; }
       </style>
-      <header><span class="mark" aria-hidden="true">E</span><h1>Page editor</h1></header>
+      <header><span class="mark" aria-hidden="true">${lucideIcon('file-pen-line')}</span><h1>Page editor</h1></header>
       <hr />
       <section class="settings" aria-label="Page editor settings"></section>
       <section class="frontmatter" aria-labelledby="frontmatter-title">

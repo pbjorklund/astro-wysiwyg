@@ -8,7 +8,7 @@ import { isInsideProjectRoot } from './project-path.ts';
 const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
-  'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
+  'img', 'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
 ]);
 
 interface Position {
@@ -19,6 +19,7 @@ interface Position {
 interface AstroAttribute {
   kind: string;
   name: string;
+  value?: string;
 }
 
 interface AstroNode {
@@ -71,7 +72,7 @@ export async function resolveAstroSourceMarker(
     const end = node.position?.end?.offset;
     if (!tag || !BLOCK_TAGS.has(tag) || start === undefined || end === undefined) return;
     if (offset < start || offset > end || !node.children?.length) return;
-    if (node.children.every(isStaticInlineNode)) {
+    if (node.children.every(isStaticInlineNode) && node.children.every((child) => hasResolvableImageSources(child, source))) {
       matches.push(node);
       return;
     }
@@ -218,7 +219,9 @@ export async function annotateAstroSource(
     const start = node.position?.start?.offset;
     const end = node.position?.end?.offset;
     if (!tag || !BLOCK_TAGS.has(tag) || start === undefined || end === undefined) return;
-    if (!node.children?.length || !node.children.every(isStaticInlineNode)) return;
+    if (!node.children?.length
+      || !node.children.every(isStaticInlineNode)
+      || !node.children.every((child) => hasResolvableImageSources(child, source))) return;
 
     const original = source.slice(start, end);
     const openingEnd = findOpeningTagEnd(source, start, end);
@@ -251,8 +254,48 @@ function visit(node: AstroNode, callback: (node: AstroNode) => void): void {
 function isStaticInlineNode(node: AstroNode): boolean {
   if (node.type === 'text' || node.type === 'comment') return true;
   if (node.type !== 'element' || !node.name || !INLINE_TAGS.has(node.name.toLowerCase())) return false;
-  if (!node.attributes!.every(isStaticHtmlAttribute)) return false;
+  const attributesSafe = node.name.toLowerCase() === 'img'
+    ? node.attributes!.every(isSafeImageAttribute)
+    : node.attributes!.every(isStaticHtmlAttribute);
+  if (!attributesSafe) return false;
   return node.children!.every(isStaticInlineNode);
+}
+
+function hasResolvableImageSources(node: AstroNode, source: string): boolean {
+  if (node.type !== 'element') return true;
+  if (node.name?.toLowerCase() === 'img') {
+    const expression = node.attributes?.find((attribute) => (
+      attribute.name === 'src' && attribute.kind === 'expression'
+    ))?.value;
+    if (expression) {
+      const importName = /^([A-Za-z_$][\w$]*)\.src$/.exec(expression)?.[1];
+      if (!importName || !hasDefaultImageImport(source, importName)) return false;
+    }
+  }
+  return node.children!.every((child) => hasResolvableImageSources(child, source));
+}
+
+function hasDefaultImageImport(source: string, importName: string): boolean {
+  const escapedName = importName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*import\\s+${escapedName}\\s+from\\s+["']\\.{1,2}\\/[A-Za-z0-9._/-]+\\.(?:gif|jpe?g|png|webp)["']\\s*;?`,
+  );
+  const importMatch = pattern.exec(source);
+  if (!importMatch) return false;
+  const sourceWithoutImport = source.slice(0, importMatch.index)
+    + source.slice(importMatch.index + importMatch[0].length);
+  const executableSource = sourceWithoutImport.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    '',
+  );
+  return [...executableSource.matchAll(new RegExp(`\\b${escapedName}\\b`, 'g'))].length === 1;
+}
+
+function isSafeImageAttribute(attribute: AstroAttribute): boolean {
+  if (attribute.name === 'src' && attribute.kind === 'expression') {
+    return /^[A-Za-z_$][\w$]*\.src$/.test(attribute.value!);
+  }
+  return isStaticHtmlAttribute(attribute);
 }
 
 function isStaticHtmlAttribute(attribute: AstroAttribute): boolean {

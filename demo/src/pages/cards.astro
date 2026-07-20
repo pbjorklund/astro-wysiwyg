@@ -1,0 +1,15 @@
+---
+import { getEntry } from 'astro:content';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const article = await getEntry('articles', 'example');
+if (!article) throw new Error('Missing example article');
+---
+<BaseLayout title="Rendered content cards">
+  <h1>Rendered content cards</h1>
+  <p>Edit collection frontmatter through the rendered card, then follow it to the article.</p>
+  <a class="demo-card" href="/articles/example">
+    <h2 class="card-title">{article.data.title}</h2>
+    <p class="card-summary">{article.data.description}</p>
+  </a>
+</BaseLayout>

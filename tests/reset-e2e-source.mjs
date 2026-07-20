@@ -1,36 +1,61 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const fixtureRoot = path.resolve('tests/fixtures/basic/src');
-const runtimeRoot = path.resolve('.tmp/e2e-site/src');
+const defaultOptions = {
+  canonicalRoot: path.resolve('demo'),
+  runtimeRoot: path.resolve('.tmp/e2e-site'),
+};
 
-export async function resetE2eSource() {
-  return resetDirectory('');
-}
-
-async function resetDirectory(relativeDirectory) {
-  const fixtureDirectory = path.join(fixtureRoot, relativeDirectory);
+export async function resetE2eSource(options = {}) {
+  const { canonicalRoot, runtimeRoot } = { ...defaultOptions, ...options };
   let changed = false;
-  for (const entry of await readdir(fixtureDirectory, { withFileTypes: true })) {
-    const relative = path.join(relativeDirectory, entry.name);
-    if (entry.isDirectory()) {
-      changed = await resetDirectory(relative) || changed;
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    changed = await resetFile(relative) || changed;
+  for (const relative of ['src', 'public']) {
+    changed = await syncPath(
+      path.join(canonicalRoot, relative),
+      path.join(runtimeRoot, relative),
+    ) || changed;
   }
   return changed;
 }
 
-async function resetFile(relative) {
-  const fixtureFile = path.join(fixtureRoot, relative);
-  const runtimeFile = path.join(runtimeRoot, relative);
-  const expected = await readFile(fixtureFile);
-  const current = await readFile(runtimeFile).catch(() => undefined);
+async function syncPath(canonicalPath, runtimePath) {
+  const canonical = await lstat(canonicalPath).catch(() => undefined);
+  const runtime = await lstat(runtimePath).catch(() => undefined);
+
+  if (!canonical) {
+    if (!runtime) return false;
+    await rm(runtimePath, { recursive: true, force: true });
+    return true;
+  }
+
+  if (canonical.isDirectory()) {
+    let changed = false;
+    if (runtime && !runtime.isDirectory()) {
+      await rm(runtimePath, { recursive: true, force: true });
+      changed = true;
+    }
+    if (!runtime?.isDirectory()) {
+      await mkdir(runtimePath, { recursive: true });
+      changed = true;
+    }
+    const canonicalEntries = new Set(await readdir(canonicalPath));
+    const runtimeEntries = new Set(await readdir(runtimePath));
+    for (const entry of new Set([...canonicalEntries, ...runtimeEntries])) {
+      changed = await syncPath(
+        path.join(canonicalPath, entry),
+        path.join(runtimePath, entry),
+      ) || changed;
+    }
+    return changed;
+  }
+
+  if (!canonical.isFile()) throw new Error(`Unsupported canonical demo entry: ${canonicalPath}`);
+  const expected = await readFile(canonicalPath);
+  const current = runtime?.isFile() ? await readFile(runtimePath) : undefined;
   if (current?.equals(expected)) return false;
 
-  await mkdir(path.dirname(runtimeFile), { recursive: true });
-  await writeFile(runtimeFile, expected);
+  if (runtime) await rm(runtimePath, { recursive: true, force: true });
+  await mkdir(path.dirname(runtimePath), { recursive: true });
+  await writeFile(runtimePath, expected);
   return true;
 }

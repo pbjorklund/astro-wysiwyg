@@ -50,6 +50,33 @@ test('rejects nested inline elements with source-dynamic attributes', async (t) 
   assert.equal(decodeMarker(await resolveAstroSourceMarker(root, file, '1:2')).original, staticSource);
 });
 
+test('annotates Astro image blocks with public or simple imported sources only', async (t) => {
+  const publicSource = '<p><img src="/assets/photo.png" alt="Public photo" /></p>';
+  assert.match(await annotateAstroSource(publicSource, '/project/public.astro', '/project') ?? '', /data-astro-wysiwyg=/);
+
+  const importedSource = '---\nimport photo from "../assets/photo.png";\n---\n<p><img src={photo.src} alt="Imported photo" /></p>';
+  const imported = await annotateAstroSource(importedSource, '/project/imported.astro', '/project');
+  assert.match(imported ?? '', /data-astro-wysiwyg=/);
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-imported-image-'));
+  const file = path.join(root, 'page.astro');
+  await writeFile(file, importedSource);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.equal(
+    decodeMarker(await resolveAstroSourceMarker(root, file, '4:10')).original,
+    '<p><img src={photo.src} alt="Imported photo" /></p>',
+  );
+
+  for (const source of [
+    '<p><img src={getImage()} alt="Dynamic" /></p>',
+    '<p><img src={images[index].src} alt="Dynamic" /></p>',
+    '<p><img src={photo.src} alt={description} /></p>',
+    '<p><img src={photo.src} alt="Missing import" /></p>',
+    '---\nimport photo from "../assets/photo.png";\n---\n<p><img src={photo.src} alt="First" /></p>\n<p><img src={photo.src} alt="Second" /></p>',
+  ]) {
+    assert.equal(await annotateAstroSource(source, '/project/dynamic.astro', '/project'), null);
+  }
+});
+
 test('resolves Astro dev source locations to safe static blocks', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-resolve-'));
   const file = path.join(root, 'page.astro');
@@ -311,6 +338,51 @@ test('annotates positioned Markdown paragraphs and headings', () => {
   const paragraphToken = String(paragraph.properties['data-astro-wysiwyg']);
   assert.equal(decodeMarker(headingToken).original, '# Heading');
   assert.equal(decodeMarker(paragraphToken).original, 'Text with **weight**.');
+});
+
+test('keeps inserted Astro and Markdown image blocks editable for removal', async () => {
+  const astroSource = '<p><img src="/assets/chart.png" alt="Project chart" /></p>';
+  const transformed = await annotateAstroSource(astroSource, '/project/page.astro', '/project');
+  assert.match(transformed ?? '', /<p data-astro-wysiwyg=/);
+
+  const markdownSource = '![Project chart](/assets/chart.png)';
+  const paragraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: markdownSource.length } },
+    children: [{
+      type: 'element', tagName: 'img', properties: { src: '/assets/chart.png', alt: 'Project chart' },
+      position: { start: { offset: 0 }, end: { offset: markdownSource.length } },
+      children: [],
+    }],
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [paragraph] },
+    { path: '/project/page.md', value: markdownSource },
+  );
+  const marker = decodeMarker(String(paragraph.properties['data-astro-wysiwyg']));
+  assert.equal(marker.original, markdownSource);
+  assert.equal(marker.tag, 'p');
+
+  const referenceSource = '![Project chart][chart]';
+  const referenceParagraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: referenceSource.length } },
+    children: [{
+      type: 'element', tagName: 'img', properties: {},
+      position: { start: { offset: 0 }, end: { offset: referenceSource.length } }, children: [],
+    }],
+  };
+  const missingPositionParagraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: referenceSource.length } },
+    children: [{ type: 'element', tagName: 'img', properties: {}, children: [] }],
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [referenceParagraph, missingPositionParagraph] },
+    { path: '/project/page.md', value: referenceSource },
+  );
+  assert.equal(referenceParagraph.properties['data-astro-wysiwyg'], undefined);
+  assert.equal(missingPositionParagraph.properties['data-astro-wysiwyg'], undefined);
 });
 
 test('annotates a static Markdown list as one editable block', () => {

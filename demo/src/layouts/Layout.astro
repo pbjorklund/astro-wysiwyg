@@ -1,0 +1,10 @@
+---
+import BaseLayout from './BaseLayout.astro';
+
+const { frontmatter = {} } = Astro.props;
+const title = frontmatter.title ?? 'Editable example';
+---
+<BaseLayout title={title}>
+  {frontmatter.title && <h1 class="frontmatter-title">{frontmatter.title}</h1>}
+  <slot />
+</BaseLayout>

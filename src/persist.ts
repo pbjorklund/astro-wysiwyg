@@ -45,6 +45,29 @@ export interface SourceStructureEditResult {
   file: string;
 }
 
+export interface SourceImageInsert {
+  marker: string;
+  src: string;
+  alt: string;
+}
+
+export interface SourceImageReplacement extends SourceImageInsert {
+  assetKind: 'public' | 'source';
+}
+
+export interface SourceVideoInsert {
+  marker: string;
+  src: string;
+  label: string;
+  description: string;
+  poster?: string;
+  controls: boolean;
+  preload: 'auto' | 'metadata' | 'none';
+  muted: boolean;
+  loop: boolean;
+  autoplay: boolean;
+}
+
 interface SourceTarget {
   marker: ReturnType<typeof decodeMarker>;
   filePath: string;
@@ -90,6 +113,155 @@ export async function applySourceEdit(
           tag,
         )),
         file: filePath,
+      },
+    };
+  }, onBeforeWrite);
+}
+
+export async function applySourceImageInsert(
+  root: string,
+  edit: SourceImageInsert,
+  assetUrlPrefix: string,
+  writableRoot = root,
+  onBeforeWrite?: BeforeTextFileWrite,
+): Promise<Required<SourceStructureEditResult>> {
+  const { marker, filePath } = await resolveSourceTarget(root, edit.marker, writableRoot);
+  const src = validateImageReference(edit.src, assetUrlPrefix);
+  const alt = validateAltText(edit.alt);
+
+  return mutateTextFile<Required<SourceStructureEditResult>>(filePath, (source) => {
+    const start = locateOriginal(source, marker.original, marker.start, marker.end);
+    if (marker.format === 'frontmatter') {
+      throw new SourceEditError('Images cannot be inserted beside frontmatter fields.', 400);
+    }
+    const newline = source.includes('\r\n') ? '\r\n' : '\n';
+    const indentation = marker.format === 'astro' ? lineIndentation(source, start) : '';
+    const separator = marker.format === 'astro' ? `${newline}${indentation}` : `${newline}${newline}`;
+    const inserted = marker.format === 'astro'
+      ? `<p><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}" /></p>`
+      : `![${escapeMarkdownAlt(alt)}](${src})`;
+    const insertion = start + marker.original.length;
+    const updated = source.slice(0, insertion) + separator + inserted + source.slice(insertion);
+    const markerStart = insertion + separator.length;
+    return {
+      source: updated,
+      result: {
+        file: filePath,
+        marker: encodeMarker(createMarker(
+          marker.file,
+          markerStart,
+          markerStart + inserted.length,
+          inserted,
+          marker.format,
+          'p',
+        )),
+      },
+    };
+  }, onBeforeWrite);
+}
+
+export async function applySourceVideoInsert(
+  root: string,
+  edit: SourceVideoInsert,
+  assetUrlPrefix: string,
+  writableRoot = root,
+  onBeforeWrite?: BeforeTextFileWrite,
+): Promise<Required<SourceStructureEditResult>> {
+  const { marker, filePath } = await resolveSourceTarget(root, edit.marker, writableRoot);
+  const src = validateVideoReference(edit.src, assetUrlPrefix);
+  const label = validateVideoText(edit.label, 'Give the video an accessible label.', 300);
+  const description = validateVideoText(edit.description, 'Give the video a visible description.', 1_000);
+  const poster = edit.poster ? validatePosterReference(edit.poster) : undefined;
+  if (edit.controls !== true) throw new SourceEditError('Native video controls are required.', 400);
+  if (!['auto', 'metadata', 'none'].includes(edit.preload)) {
+    throw new SourceEditError('Choose a supported video preload setting.', 400);
+  }
+  if (edit.autoplay && !edit.muted) {
+    throw new SourceEditError('Autoplay requires muted playback.', 400);
+  }
+
+  return mutateTextFile<Required<SourceStructureEditResult>>(filePath, (source) => {
+    const start = locateOriginal(source, marker.original, marker.start, marker.end);
+    if (marker.format === 'frontmatter') {
+      throw new SourceEditError('Videos cannot be inserted beside frontmatter fields.', 400);
+    }
+    const newline = source.includes('\r\n') ? '\r\n' : '\n';
+    const indentation = marker.format === 'astro' ? lineIndentation(source, start) : '';
+    const separator = marker.format === 'astro' ? `${newline}${indentation}` : `${newline}${newline}`;
+    const booleanAttributes = [
+      edit.muted ? 'muted' : '',
+      edit.loop ? 'loop' : '',
+      edit.autoplay ? 'autoplay' : '',
+      'playsinline',
+    ].filter(Boolean).join(' ');
+    const posterAttribute = poster ? ` poster="${escapeHtmlAttribute(poster)}"` : '';
+    const lines = [
+      '<figure>',
+      `  <video controls preload="${edit.preload}" aria-label="${escapeHtmlAttribute(label)}"${posterAttribute} ${booleanAttributes}>`,
+      `    <source src="${escapeHtmlAttribute(src)}" type="video/mp4" />`,
+      `    <a href="${escapeHtmlAttribute(src)}">Download ${escapeHtmlText(label)}</a>.`,
+      '  </video>',
+      `  <figcaption>${escapeHtmlText(description)}</figcaption>`,
+      '</figure>',
+    ];
+    const inserted = lines.join(`${newline}${indentation}`);
+    const insertion = start + marker.original.length;
+    const updated = source.slice(0, insertion) + separator + inserted + source.slice(insertion);
+    const markerStart = insertion + separator.length;
+    return {
+      source: updated,
+      result: {
+        file: filePath,
+        marker: encodeMarker(createMarker(
+          marker.file,
+          markerStart,
+          markerStart + inserted.length,
+          inserted,
+          marker.format,
+          'figure',
+        )),
+      },
+    };
+  }, onBeforeWrite);
+}
+
+export async function applySourceImageReplacement(
+  root: string,
+  edit: SourceImageReplacement,
+  writableRoot = root,
+  onBeforeWrite?: BeforeTextFileWrite,
+): Promise<Required<SourceStructureEditResult>> {
+  const { marker, filePath } = await resolveSourceTarget(root, edit.marker, writableRoot);
+  const alt = validateAltText(edit.alt);
+  const src = validateReplacementReference(edit.src, edit.assetKind);
+
+  return mutateTextFile<Required<SourceStructureEditResult>>(filePath, (source) => {
+    const start = locateOriginal(source, marker.original, marker.start, marker.end);
+    if (marker.format === 'frontmatter') {
+      throw new SourceEditError('Frontmatter fields cannot contain replaceable image blocks.', 400);
+    }
+    const replacement = marker.format === 'astro'
+      ? replaceAstroImage(marker.original, src, alt, edit.assetKind)
+      : replaceMarkdownImage(marker.original, src, alt);
+    let updated = source.slice(0, start) + replacement.block + source.slice(start + marker.original.length);
+    let markerStart = start;
+    if (replacement.importName && edit.assetKind === 'source') {
+      const imported = replaceDefaultImport(updated, replacement.importName, src);
+      updated = imported.source;
+      if (imported.pathStart < markerStart) markerStart += imported.delta;
+    }
+    return {
+      source: updated,
+      result: {
+        file: filePath,
+        marker: encodeMarker(createMarker(
+          marker.file,
+          markerStart,
+          markerStart + replacement.block.length,
+          replacement.block,
+          marker.format,
+          marker.tag,
+        )),
       },
     };
   }, onBeforeWrite);
@@ -162,6 +334,199 @@ async function resolveSourceTarget(root: string, token: string, writableRoot: st
   assertInsideRoot(rootPath, filePath);
   assertInsideWritableRoot(writableRootPath, filePath);
   return { marker, filePath };
+}
+
+function validateVideoReference(value: string, assetUrlPrefix: string): string {
+  if (!assetUrlPrefix.startsWith('/') || !assetUrlPrefix.endsWith('/')) {
+    throw new SourceEditError('The configured video asset URL is invalid.', 500);
+  }
+  const reference = value.trim();
+  if (!reference.startsWith(assetUrlPrefix)
+    || !/^[A-Za-z0-9/_-][A-Za-z0-9._/-]*\.mp4$/i.test(reference)
+    || reference.split('/').includes('..')
+    || /[?#\\]/.test(reference)) {
+    const message = reference.startsWith(assetUrlPrefix)
+      ? 'Choose a valid video reference.'
+      : 'The video must use the configured video asset directory.';
+    throw new SourceEditError(message, 400);
+  }
+  return reference;
+}
+
+function validatePosterReference(value: string): string {
+  const reference = value.trim();
+  if (!/^\/[A-Za-z0-9._/-]+\.(?:gif|jpe?g|png|webp)$/i.test(reference)
+    || reference.split('/').includes('..')
+    || /[?#\\]/.test(reference)) {
+    throw new SourceEditError('Choose a valid public poster image reference.', 400);
+  }
+  return reference;
+}
+
+function validateVideoText(value: string, message: string, maxLength: number): string {
+  const text = value.trim();
+  if (!text || text.length > maxLength || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) {
+    throw new SourceEditError(message, 400);
+  }
+  return text;
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function validateReplacementReference(value: string, kind: SourceImageReplacement['assetKind']): string {
+  const reference = value.trim();
+  const commonInvalid = !/\.(?:gif|jpe?g|png|webp)$/i.test(reference)
+    || /[\u0000-\u001f\u007f?#\\]/.test(reference)
+    || reference.split('/').includes('..') && kind === 'public';
+  if (commonInvalid
+    || (kind === 'public' && !reference.startsWith('/'))
+    || (kind === 'source' && (reference.startsWith('/') || !/^\.{0,2}\/?[A-Za-z0-9._/-]+$/.test(reference)))) {
+    throw new SourceEditError('Choose a valid public or source image reference.', 400);
+  }
+  return reference;
+}
+
+interface ImageBlockReplacement {
+  block: string;
+  importName?: string;
+}
+
+function replaceMarkdownImage(original: string, src: string, alt: string): ImageBlockReplacement {
+  const pattern = /!\[((?:\\.|[^\]\\])*)\]\(\s*(<[^>\r\n]+>|[^\s)\r\n]+)((?:\s+(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\((?:\\.|[^)])*\)))?)\s*\)/g;
+  const matches = [...original.matchAll(pattern)];
+  if (matches.length !== 1) {
+    throw new SourceEditError('The selected block must contain exactly one supported image.', 400);
+  }
+  const match = matches[0];
+  const image = `![${escapeMarkdownAlt(alt)}](${src}${match[3]})`;
+  return {
+    block: original.slice(0, match.index) + image + original.slice(match.index! + match[0].length),
+  };
+}
+
+function replaceAstroImage(
+  original: string,
+  src: string,
+  alt: string,
+  assetKind: SourceImageReplacement['assetKind'],
+): ImageBlockReplacement {
+  const images = findAstroImageTags(original);
+  if (images.length !== 1) {
+    throw new SourceEditError('The selected block must contain exactly one supported image.', 400);
+  }
+  const image = images[0];
+  const srcAttributes = [...image.value.matchAll(/\bsrc\s*=\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\{[^{}]+\})/gi)];
+  const altAttributes = [...image.value.matchAll(/\balt\s*=\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*')/gi)];
+  if (srcAttributes.length !== 1 || altAttributes.length > 1) {
+    throw new SourceEditError('The selected image attributes are ambiguous.', 400);
+  }
+  const currentSrc = srcAttributes[0][1];
+  const imported = /^\{([A-Za-z_$][\w$]*)\.src\}$/.exec(currentSrc)?.[1];
+  if (assetKind === 'source' && !imported) {
+    throw new SourceEditError('A source asset can replace only an existing imported Astro image.', 400);
+  }
+  let tag = image.value.replace(srcAttributes[0][0], `src=${imported && assetKind === 'source' ? currentSrc : `"${escapeHtmlAttribute(src)}"`}`);
+  const escapedAlt = `alt="${escapeHtmlAttribute(alt)}"`;
+  if (altAttributes.length === 1) tag = tag.replace(altAttributes[0][0], escapedAlt);
+  else tag = tag.replace(/\s*\/?\>$/, (ending) => ` ${escapedAlt}${ending}`);
+  return {
+    block: original.slice(0, image.start) + tag + original.slice(image.end),
+    importName: imported,
+  };
+}
+
+function findAstroImageTags(source: string): Array<{ start: number; end: number; value: string }> {
+  const images: Array<{ start: number; end: number; value: string }> = [];
+  const pattern = /<img\b/gi;
+  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+    let quote = '';
+    let braces = 0;
+    let end = -1;
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = '';
+      } else if (character === '"' || character === "'") quote = character;
+      else if (character === '{') braces += 1;
+      else if (character === '}') braces = Math.max(0, braces - 1);
+      else if (character === '>' && braces === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+    if (end < 0) throw new SourceEditError('The selected image markup is incomplete.', 400);
+    images.push({ start: match.index, end, value: source.slice(match.index, end) });
+    pattern.lastIndex = end;
+  }
+  return images;
+}
+
+function replaceDefaultImport(
+  source: string,
+  importName: string,
+  reference: string,
+): { source: string; pathStart: number; delta: number } {
+  const escapedName = importName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(^|\\n)(\\s*import\\s+${escapedName}\\s+from\\s+)(["'])([^"']+)(\\3\\s*;?)`, 'g');
+  const matches = [...source.matchAll(pattern)];
+  if (matches.length !== 1) {
+    throw new SourceEditError('The imported image source is ambiguous.', 400);
+  }
+  const match = matches[0];
+  const sourceWithoutImport = source.slice(0, match.index) + source.slice(match.index! + match[0].length);
+  const executableSource = sourceWithoutImport.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    '',
+  );
+  if ([...executableSource.matchAll(new RegExp(`\\b${escapedName}\\b`, 'g'))].length !== 1) {
+    throw new SourceEditError('The imported image source is used by more than one construct.', 400);
+  }
+  const pathStart = match.index! + match[1].length + match[2].length + match[3].length;
+  const oldPath = match[4];
+  return {
+    source: source.slice(0, pathStart) + reference + source.slice(pathStart + oldPath.length),
+    pathStart,
+    delta: reference.length - oldPath.length,
+  };
+}
+
+function validateImageReference(value: string, assetUrlPrefix: string): string {
+  const extensions = /\.(?:gif|jpe?g|png|webp)$/i;
+  if (!assetUrlPrefix.startsWith('/') || !assetUrlPrefix.endsWith('/')) {
+    throw new SourceEditError('The configured image asset URL is invalid.', 500);
+  }
+  const fileName = value.startsWith(assetUrlPrefix) ? value.slice(assetUrlPrefix.length) : '';
+  if (!fileName
+    || fileName.includes('/')
+    || fileName.includes('\\')
+    || fileName.includes('..')
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(fileName)
+    || !extensions.test(fileName)) {
+    throw new SourceEditError('The image must use the configured project asset location.', 400);
+  }
+  return `${assetUrlPrefix}${fileName}`;
+}
+
+function validateAltText(value: string): string {
+  const alt = value.trim();
+  if (!alt || alt.length > 300 || /[\u0000-\u001f\u007f]/.test(alt)) {
+    throw new SourceEditError('Enter concise alt text without line breaks.', 400);
+  }
+  return alt;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeMarkdownAlt(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
 }
 
 function lineIndentation(source: string, start: number): string {

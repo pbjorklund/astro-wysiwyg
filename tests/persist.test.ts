@@ -3,7 +3,13 @@ import { chmod, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { applySourceEdit, applySourceStructureEdit } from '../src/persist.ts';
+import {
+  applySourceEdit,
+  applySourceImageInsert,
+  applySourceImageReplacement,
+  applySourceStructureEdit,
+  applySourceVideoInsert,
+} from '../src/persist.ts';
 import { createMarker, decodeMarker, encodeMarker } from '../src/marker.ts';
 
 async function fixture(source: string, extension = '.md') {
@@ -209,6 +215,370 @@ test('adds a Markdown paragraph after the selected block', async (t) => {
   assert.equal(await readFile(file, 'utf8'), 'First block\n\nNew paragraph\n\nSecond block\n');
   assert.equal(decodeMarker(result.marker!).original, 'New paragraph');
   assert.equal(decodeMarker(result.marker!).start, 13);
+});
+
+test('inserts portable image syntax after Astro, Markdown, and MDX blocks', async (t) => {
+  const markdown = await fixture('Before\n\nAfter\n');
+  const mdx = await fixture('Before\n\nAfter\n', '.mdx');
+  const crlf = await fixture('Before\r\n\r\nAfter\r\n');
+  const astro = await fixture('<main>\n  <p>Before</p>\n  <p>After</p>\n</main>\n', '.astro');
+  t.after(() => Promise.all([
+    rm(markdown.root, { recursive: true, force: true }),
+    rm(mdx.root, { recursive: true, force: true }),
+    rm(crlf.root, { recursive: true, force: true }),
+    rm(astro.root, { recursive: true, force: true }),
+  ]));
+
+  for (const target of [markdown, mdx]) {
+    const token = encodeMarker(createMarker(
+      path.basename(target.file), 0, 6, 'Before', 'markdown', 'p',
+    ));
+    const result = await applySourceImageInsert(target.root, {
+      marker: token,
+      src: '/assets/chart.png',
+      alt: 'Chart [Q1]',
+    }, '/assets/');
+    assert.equal(await readFile(target.file, 'utf8'), 'Before\n\n![Chart \\[Q1\\]](/assets/chart.png)\n\nAfter\n');
+    assert.equal(decodeMarker(result.marker).original, '![Chart \\[Q1\\]](/assets/chart.png)');
+  }
+
+  const crlfResult = await applySourceImageInsert(crlf.root, {
+    marker: encodeMarker(createMarker('page.md', 0, 6, 'Before', 'markdown', 'p')),
+    src: '/assets/chart.png',
+    alt: 'Chart',
+  }, '/assets/');
+  assert.equal(await readFile(crlf.file, 'utf8'), 'Before\r\n\r\n![Chart](/assets/chart.png)\r\n\r\nAfter\r\n');
+  assert.equal(decodeMarker(crlfResult.marker).original, '![Chart](/assets/chart.png)');
+
+  const astroSource = await readFile(astro.file, 'utf8');
+  const start = astroSource.indexOf('<p>Before</p>');
+  const result = await applySourceImageInsert(astro.root, {
+    marker: encodeMarker(createMarker(
+      'page.astro', start, start + 13, '<p>Before</p>', 'astro', 'p',
+    )),
+    src: '/assets/chart.png',
+    alt: 'Chart & "details"',
+  }, '/assets/');
+  assert.equal(
+    await readFile(astro.file, 'utf8'),
+    '<main>\n  <p>Before</p>\n  <p><img src="/assets/chart.png" alt="Chart &amp; &quot;details&quot;" /></p>\n  <p>After</p>\n</main>\n',
+  );
+  assert.equal(decodeMarker(result.marker).tag, 'p');
+});
+
+test('inserts native video figures after Astro, Markdown, and MDX blocks', async (t) => {
+  const cases = [
+    { extension: '.astro', format: 'astro' as const, source: '  <p>Before</p>\n', separator: '\n  ', newline: '\n' },
+    { extension: '.md', format: 'markdown' as const, source: 'Before\n', separator: '\n\n', newline: '\n' },
+    { extension: '.mdx', format: 'markdown' as const, source: 'Before\r\n', separator: '\r\n\r\n', newline: '\r\n' },
+  ];
+  for (const item of cases) {
+    const current = await fixture(item.source, item.extension);
+    t.after(() => rm(current.root, { recursive: true, force: true }));
+    const original = item.format === 'astro' ? '<p>Before</p>' : 'Before';
+    const start = item.source.indexOf(original);
+    const result = await applySourceVideoInsert(current.root, {
+      marker: encodeMarker(createMarker(
+        `page${item.extension}`, start, start + original.length, original, item.format, 'p',
+      )),
+      src: '/media/videos/walkthrough.mp4',
+      label: 'Product walkthrough',
+      description: 'A short tour of the project dashboard.',
+      poster: '/media/posters/walkthrough.png',
+      controls: true,
+      preload: 'metadata',
+      muted: true,
+      loop: true,
+      autoplay: true,
+    }, '/media/videos/');
+    const indentation = item.format === 'astro' ? '  ' : '';
+    const figure = [
+      '<figure>',
+      '  <video controls preload="metadata" aria-label="Product walkthrough" poster="/media/posters/walkthrough.png" muted loop autoplay playsinline>',
+      '    <source src="/media/videos/walkthrough.mp4" type="video/mp4" />',
+      '    <a href="/media/videos/walkthrough.mp4">Download Product walkthrough</a>.',
+      '  </video>',
+      '  <figcaption>A short tour of the project dashboard.</figcaption>',
+      '</figure>',
+    ].map((line, index) => index === 0 ? line : `${indentation}${line}`).join(item.newline);
+    assert.equal(
+      await readFile(current.file, 'utf8'),
+      item.source.slice(0, start + original.length) + item.separator + figure
+        + item.source.slice(start + original.length),
+    );
+    assert.equal(decodeMarker(result.marker).original, figure);
+  }
+});
+
+test('uses safe video defaults and rejects invalid playback or accessibility values', async (t) => {
+  const source = 'Before\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = encodeMarker(createMarker('page.md', 0, 6, 'Before', 'markdown', 'p'));
+  const base = {
+    marker,
+    src: '/videos/clip.mp4',
+    label: 'Demo video',
+    description: 'A narrated product demonstration.',
+    controls: true,
+    preload: 'none' as const,
+    muted: false,
+    loop: false,
+    autoplay: false,
+  };
+
+  await applySourceVideoInsert(root, base, '/videos/');
+  assert.match(await readFile(file, 'utf8'), /<video controls preload="none" aria-label="Demo video" playsinline>/);
+  await writeFile(file, source);
+  await assert.rejects(applySourceVideoInsert(root, base, 'videos'), /configured video asset URL/i);
+  await assert.rejects(applySourceVideoInsert(root, {
+    ...base,
+    marker: encodeMarker(createMarker('page.md', 0, 6, 'Before', 'frontmatter', 'p')),
+  }, '/videos/'), /frontmatter fields/i);
+  assert.equal(await readFile(file, 'utf8'), source);
+
+  for (const [patch, expected] of [
+    [{ src: '/other/clip.mp4' }, /configured video asset directory/i],
+    [{ src: '/videos/clip.webm' }, /valid video reference/i],
+    [{ label: '' }, /accessible label/i],
+    [{ description: '' }, /visible description/i],
+    [{ controls: false }, /native video controls/i],
+    [{ preload: 'eager' }, /preload/i],
+    [{ autoplay: true, muted: false }, /Autoplay requires muted/i],
+    [{ poster: 'https://example.com/poster.png' }, /public poster/i],
+    [{ poster: '/posters/poster.svg' }, /public poster/i],
+  ] as const) {
+    await assert.rejects(
+      applySourceVideoInsert(root, { ...base, ...patch } as never, '/videos/'),
+      expected,
+    );
+    assert.equal(await readFile(file, 'utf8'), source);
+  }
+});
+
+test('replaces one Markdown or MDX image while preserving links, titles, captions, and surrounding text', async (t) => {
+  const markdownSource = 'Before\n\n[![Old alt](/assets/old.png "Title")](/docs) Caption\n\nAfter\n';
+  const markdown = await fixture(markdownSource);
+  const mdxSource = 'Before\n\n![Old](../assets/old.png)\n\nAfter\n';
+  const mdx = await fixture(mdxSource, '.mdx');
+  t.after(() => Promise.all([
+    rm(markdown.root, { recursive: true, force: true }),
+    rm(mdx.root, { recursive: true, force: true }),
+  ]));
+
+  const markdownOriginal = '[![Old alt](/assets/old.png "Title")](/docs) Caption';
+  const markdownStart = markdownSource.indexOf(markdownOriginal);
+  const markdownResult = await applySourceImageReplacement(markdown.root, {
+    marker: encodeMarker(createMarker(
+      'page.md', markdownStart, markdownStart + markdownOriginal.length,
+      markdownOriginal, 'markdown', 'p',
+    )),
+    src: '/assets/new.png',
+    alt: 'New [alt]',
+    assetKind: 'public',
+  });
+  assert.equal(
+    await readFile(markdown.file, 'utf8'),
+    'Before\n\n[![New \\[alt\\]](/assets/new.png "Title")](/docs) Caption\n\nAfter\n',
+  );
+  assert.equal(
+    decodeMarker(markdownResult.marker).original,
+    '[![New \\[alt\\]](/assets/new.png "Title")](/docs) Caption',
+  );
+
+  const mdxOriginal = '![Old](../assets/old.png)';
+  const mdxStart = mdxSource.indexOf(mdxOriginal);
+  await applySourceImageReplacement(mdx.root, {
+    marker: encodeMarker(createMarker(
+      'page.mdx', mdxStart, mdxStart + mdxOriginal.length, mdxOriginal, 'markdown', 'p',
+    )),
+    src: '../assets/new.png',
+    alt: 'New MDX image',
+    assetKind: 'source',
+  });
+  assert.equal(
+    await readFile(mdx.file, 'utf8'),
+    'Before\n\n![New MDX image](../assets/new.png)\n\nAfter\n',
+  );
+});
+
+test('replaces public and imported Astro images while preserving compatible markup', async (t) => {
+  const publicSource = '<figure>\n  <p class="hero"><a href="/docs"><img loading="lazy" src="/assets/old.png" alt="Old" width="400" /></a> Caption</p>\n  <figcaption>Kept caption</figcaption>\n</figure>\n';
+  const publicImage = await fixture(publicSource, '.astro');
+  const importedSource = '---\nimport photo from "../assets/old.png";\n---\n<p class="hero"><img src={photo.src} alt="Old" height="200" /></p>\n';
+  const importedImage = await fixture(importedSource, '.astro');
+  t.after(() => Promise.all([
+    rm(publicImage.root, { recursive: true, force: true }),
+    rm(importedImage.root, { recursive: true, force: true }),
+  ]));
+
+  const publicOriginal = '<p class="hero"><a href="/docs"><img loading="lazy" src="/assets/old.png" alt="Old" width="400" /></a> Caption</p>';
+  const publicStart = publicSource.indexOf(publicOriginal);
+  await applySourceImageReplacement(publicImage.root, {
+    marker: encodeMarker(createMarker(
+      'page.astro', publicStart, publicStart + publicOriginal.length,
+      publicOriginal, 'astro', 'p',
+    )),
+    src: '/assets/new.webp',
+    alt: 'New & improved',
+    assetKind: 'public',
+  });
+  assert.equal(
+    await readFile(publicImage.file, 'utf8'),
+    publicSource.replace(
+      publicOriginal,
+      '<p class="hero"><a href="/docs"><img loading="lazy" src="/assets/new.webp" alt="New &amp; improved" width="400" /></a> Caption</p>',
+    ),
+  );
+
+  const importedOriginal = '<p class="hero"><img src={photo.src} alt="Old" height="200" /></p>';
+  const importedStart = importedSource.indexOf(importedOriginal);
+  const importedResult = await applySourceImageReplacement(importedImage.root, {
+    marker: encodeMarker(createMarker(
+      'page.astro', importedStart, importedStart + importedOriginal.length,
+      importedOriginal, 'astro', 'p',
+    )),
+    src: '../assets/longer-replacement.png',
+    alt: 'Imported replacement',
+    assetKind: 'source',
+  });
+  assert.equal(
+    await readFile(importedImage.file, 'utf8'),
+    '---\nimport photo from "../assets/longer-replacement.png";\n---\n<p class="hero"><img src={photo.src} alt="Imported replacement" height="200" /></p>\n',
+  );
+  assert.equal(
+    decodeMarker(importedResult.marker).start,
+    importedStart + '../assets/longer-replacement.png'.length - '../assets/old.png'.length,
+  );
+});
+
+test('rejects ambiguous, unsupported, and conflicting image replacements without changing source', async (t) => {
+  const source = '<p><img src="/assets/a.png" alt="A" /><img src="/assets/b.png" alt="B" /></p>\n';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const edit = {
+    marker: encodeMarker(createMarker('page.astro', 0, source.trimEnd().length, source.trimEnd(), 'astro', 'p')),
+    src: '/assets/new.png',
+    alt: 'Replacement',
+    assetKind: 'public' as const,
+  };
+
+  await assert.rejects(applySourceImageReplacement(root, edit), /exactly one supported image/i);
+  assert.equal(await readFile(file, 'utf8'), source);
+
+  const noImage = '<p>No image</p>';
+  await writeFile(file, `${noImage}\n`);
+  await assert.rejects(applySourceImageReplacement(root, {
+    ...edit,
+    marker: encodeMarker(createMarker('page.astro', 0, noImage.length, noImage, 'astro', 'p')),
+  }), /exactly one supported image/i);
+  await assert.rejects(applySourceImageReplacement(root, {
+    ...edit,
+    marker: encodeMarker(createMarker('page.astro', 0, noImage.length, 'Stale image block', 'astro', 'p')),
+  }), /source changed/i);
+  assert.equal(await readFile(file, 'utf8'), `${noImage}\n`);
+});
+
+test('rejects replacing an imported Astro asset used by more than one construct', async (t) => {
+  const original = '<p><img src={photo.src} alt="First" /></p>';
+  const source = `---\nimport photo from "../assets/old.png";\n---\n${original}\n<p><img src={photo.src} alt="Second" /></p>\n`;
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const start = source.indexOf(original);
+
+  await assert.rejects(applySourceImageReplacement(root, {
+    marker: encodeMarker(createMarker(
+      'page.astro', start, start + original.length, original, 'astro', 'p',
+    )),
+    src: '../assets/new.png',
+    alt: 'Replacement',
+    assetKind: 'source',
+  }), /used by more than one construct/i);
+  assert.equal(await readFile(file, 'utf8'), source);
+});
+
+test('rejects unsupported replacement markers, references, attributes, and imported sources', async (t) => {
+  const { root, file } = await fixture('<p>Initial</p>\n', '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const attempt = async (
+    source: string,
+    format: 'astro' | 'frontmatter' | 'markdown',
+    patch: Partial<Parameters<typeof applySourceImageReplacement>[1]>,
+    expected: RegExp,
+  ) => {
+    await writeFile(file, source);
+    const original = source.trimEnd();
+    await assert.rejects(applySourceImageReplacement(root, {
+      marker: encodeMarker(createMarker('page.astro', 0, original.length, original, format, 'p')),
+      src: '/assets/new.png',
+      alt: 'Replacement',
+      assetKind: 'public',
+      ...patch,
+    }), expected);
+    assert.equal(await readFile(file, 'utf8'), source);
+  };
+
+  await attempt('title\n', 'frontmatter', {}, /Frontmatter fields/i);
+  await attempt('<p><img src="/assets/old.png" alt="Old" /></p>\n', 'astro', {
+    src: 'relative.png',
+  }, /valid public or source image reference/i);
+  await attempt('No image here\n', 'markdown', {}, /exactly one supported image/i);
+  await attempt('<p><img src="/assets/old.png" alt="Old" /></p>\n', 'astro', {
+    src: '../assets/new.png', assetKind: 'source',
+  }, /existing imported Astro image/i);
+  await attempt('<p><img alt="Old" /></p>\n', 'astro', {}, /attributes are ambiguous/i);
+  await attempt('<p><img src="/assets/old.png" alt="One" alt="Two" /></p>\n', 'astro', {}, /attributes are ambiguous/i);
+  await attempt('<p><img src="/assets/old.png" alt="Old"\n', 'astro', {}, /markup is incomplete/i);
+  await attempt('<p><img src={photo.src} alt="Old" /></p>\n', 'astro', {
+    src: '../assets/new.png', assetKind: 'source',
+  }, /imported image source is ambiguous/i);
+});
+
+test('adds missing alt markup when replacing a supported Astro image', async (t) => {
+  const source = '<p><img class="hero" src="/assets/old.png" /></p>\n';
+  const { root, file } = await fixture(source, '.astro');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = source.trimEnd();
+  await applySourceImageReplacement(root, {
+    marker: encodeMarker(createMarker('page.astro', 0, original.length, original, 'astro', 'p')),
+    src: '/assets/new.png',
+    alt: 'Added alt text',
+    assetKind: 'public',
+  });
+  assert.equal(
+    await readFile(file, 'utf8'),
+    '<p><img class="hero" src="/assets/new.png" alt="Added alt text" /></p>\n',
+  );
+});
+
+test('rejects image insertion outside the configured asset URL or without useful alt text', async (t) => {
+  const source = 'Before\n';
+  const { root, file } = await fixture(source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = encodeMarker(createMarker('page.md', 0, 6, 'Before', 'markdown', 'p'));
+
+  for (const edit of [
+    { marker, src: '/other/chart.png', alt: 'Chart' },
+    { marker, src: '/assets/../chart.png', alt: 'Chart' },
+    { marker, src: '/assets/chart.svg', alt: 'Chart' },
+    { marker, src: '/assets/chart.png', alt: '' },
+    { marker, src: '/assets/chart.png', alt: 'line\nbreak' },
+  ]) {
+    await assert.rejects(applySourceImageInsert(root, edit, '/assets/'), /image|alt text/i);
+    assert.equal(await readFile(file, 'utf8'), source);
+  }
+  await assert.rejects(
+    applySourceImageInsert(root, { marker, src: '/assets/chart.png', alt: 'Chart' }, 'assets'),
+    /configured image asset URL/i,
+  );
+  const frontmatterMarker = encodeMarker(createMarker('page.md', 0, 6, 'Before', 'frontmatter', 'p'));
+  await assert.rejects(
+    applySourceImageInsert(root, {
+      marker: frontmatterMarker, src: '/assets/chart.png', alt: 'Chart',
+    }, '/assets/'),
+    /frontmatter/i,
+  );
+  assert.equal(await readFile(file, 'utf8'), source);
 });
 
 test('adds an Astro paragraph with the selected block indentation', async (t) => {
