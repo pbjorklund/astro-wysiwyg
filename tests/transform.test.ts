@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { annotateAstroSource, resolveAstroSourceMarker } from '../src/astro-transform.ts';
-import { rehypeEditableBlocks } from '../src/rehype.ts';
+import { rehypeEditableBlocks, remarkEditableMedia } from '../src/rehype.ts';
 
 function markerFromHtml(html: string): string {
   const match = html.match(/data-astro-wysiwyg="([A-Za-z0-9_-]+)"/);
@@ -48,6 +48,33 @@ test('rejects nested inline elements with source-dynamic attributes', async (t) 
   await writeFile(file, staticSource);
   assert.match(await annotateAstroSource(staticSource, file, root) ?? '', /data-astro-wysiwyg=/);
   assert.equal(decodeMarker(await resolveAstroSourceMarker(root, file, '1:2')).original, staticSource);
+});
+
+test('annotates Astro image blocks with public or simple imported sources only', async (t) => {
+  const publicSource = '<p><img src="/assets/photo.png" alt="Public photo" /></p>';
+  assert.match(await annotateAstroSource(publicSource, '/project/public.astro', '/project') ?? '', /data-astro-wysiwyg=/);
+
+  const importedSource = '---\nimport photo from "../assets/photo.png";\n---\n<p><img src={photo.src} alt="Imported photo" /></p>';
+  const imported = await annotateAstroSource(importedSource, '/project/imported.astro', '/project');
+  assert.match(imported ?? '', /data-astro-wysiwyg=/);
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-imported-image-'));
+  const file = path.join(root, 'page.astro');
+  await writeFile(file, importedSource);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.equal(
+    decodeMarker(await resolveAstroSourceMarker(root, file, '4:10')).original,
+    '<p><img src={photo.src} alt="Imported photo" /></p>',
+  );
+
+  for (const source of [
+    '<p><img src={getImage()} alt="Dynamic" /></p>',
+    '<p><img src={images[index].src} alt="Dynamic" /></p>',
+    '<p><img src={photo.src} alt={description} /></p>',
+    '<p><img src={photo.src} alt="Missing import" /></p>',
+    '---\nimport photo from "../assets/photo.png";\n---\n<p><img src={photo.src} alt="First" /></p>\n<p><img src={photo.src} alt="Second" /></p>',
+  ]) {
+    assert.equal(await annotateAstroSource(source, '/project/dynamic.astro', '/project'), null);
+  }
 });
 
 test('resolves Astro dev source locations to safe static blocks', async (t) => {
@@ -311,6 +338,239 @@ test('annotates positioned Markdown paragraphs and headings', () => {
   const paragraphToken = String(paragraph.properties['data-astro-wysiwyg']);
   assert.equal(decodeMarker(headingToken).original, '# Heading');
   assert.equal(decodeMarker(paragraphToken).original, 'Text with **weight**.');
+});
+
+test('keeps inserted Astro and Markdown image blocks editable for removal', async () => {
+  const astroSource = '<p><img src="/assets/chart.png" alt="Project chart" /></p>';
+  const transformed = await annotateAstroSource(astroSource, '/project/page.astro', '/project');
+  assert.match(transformed ?? '', /<p data-astro-wysiwyg=/);
+
+  const markdownSource = '![Project chart](/assets/chart.png)';
+  const paragraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: markdownSource.length } },
+    children: [{
+      type: 'element', tagName: 'img', properties: { src: '/assets/chart.png', alt: 'Project chart' },
+      position: { start: { offset: 0 }, end: { offset: markdownSource.length } },
+      children: [],
+    }],
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [paragraph] },
+    { path: '/project/page.md', value: markdownSource },
+  );
+  const marker = decodeMarker(String(paragraph.properties['data-astro-wysiwyg']));
+  assert.equal(marker.original, markdownSource);
+  assert.equal(marker.tag, 'p');
+
+  const referenceSource = '![Project chart][chart]';
+  const referenceParagraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: referenceSource.length } },
+    children: [{
+      type: 'element', tagName: 'img', properties: {},
+      position: { start: { offset: 0 }, end: { offset: referenceSource.length } }, children: [],
+    }],
+  };
+  const missingPositionParagraph = {
+    type: 'element', tagName: 'p', properties: {},
+    position: { start: { offset: 0 }, end: { offset: referenceSource.length } },
+    children: [{ type: 'element', tagName: 'img', properties: {}, children: [] }],
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [referenceParagraph, missingPositionParagraph] },
+    { path: '/project/page.md', value: referenceSource },
+  );
+  assert.equal(referenceParagraph.properties['data-astro-wysiwyg'], undefined);
+  assert.equal(missingPositionParagraph.properties['data-astro-wysiwyg'], undefined);
+});
+
+test('annotates supported Astro, Markdown, and MDX native video figures', async () => {
+  const source = '<figure><video controls preload="metadata" aria-label="Project tour" poster="/assets/poster.png" playsinline><source src="/assets/tour.mp4" type="video/mp4" /><track kind="captions" src="/assets/tour.vtt" /></video><figcaption>Project tour description.</figcaption></figure>';
+  const astro = await annotateAstroSource(source, '/project/page.astro', '/project');
+  assert.match(astro ?? '', /^<figure data-astro-wysiwyg="[A-Za-z0-9_-]+" data-astro-wysiwyg-video>/);
+  const astroMarker = decodeMarker(markerFromHtml(astro ?? ''));
+  assert.equal(astroMarker.original, source);
+  assert.equal(astroMarker.tag, 'figure');
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-video-marker-'));
+  const file = path.join(root, 'video.astro');
+  await writeFile(file, source);
+  const resolved = decodeMarker(await resolveAstroSourceMarker(root, file, '1:20'));
+  assert.equal(resolved.original, source);
+  assert.equal(resolved.tag, 'figure');
+  await rm(root, { recursive: true, force: true });
+
+  const html = {
+    type: 'html', value: source,
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  const remarkTransform = remarkEditableMedia({ root: '/project' });
+  remarkTransform({ type: 'root', children: [html] }, { path: '/project/page.md', value: source });
+  assert.match(html.value, /^<figure data-astro-wysiwyg="[A-Za-z0-9_-]+" data-astro-wysiwyg-video>/);
+  assert.equal(decodeMarker(markerFromHtml(html.value)).original, source);
+  const untouched = {
+    type: 'html', value: 'Plain',
+    position: { start: { offset: 0 }, end: { offset: 5 } },
+  };
+  remarkTransform({ type: 'root', children: [untouched] }, { value: source });
+  remarkTransform({ type: 'root', children: [untouched] }, { path: '/outside/page.md', value: source });
+  remarkTransform({ type: 'root', children: [untouched] }, { path: '/project/page.md', value: source });
+  assert.equal(untouched.value, 'Plain');
+
+  const raw = {
+    type: 'raw', value: source,
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [raw] },
+    { path: '/project/page.md', value: source },
+  );
+  assert.match(raw.value, /^<figure data-astro-wysiwyg="[A-Za-z0-9_-]+" data-astro-wysiwyg-video>/);
+  assert.equal(decodeMarker(markerFromHtml(raw.value)).original, source);
+
+  const mdxSource = {
+    type: 'mdxJsxFlowElement', name: 'figure', attributes: [] as Array<{ type: string; name: string; value: string }>, children: [],
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  remarkEditableMedia({ root: '/project' })(
+    { type: 'root', children: [mdxSource] },
+    { path: '/project/page.mdx', value: source },
+  );
+  assert.equal(mdxSource.attributes[0].name, 'data-astro-wysiwyg');
+  assert.equal(decodeMarker(mdxSource.attributes[0].value).original, source);
+  assert.equal(mdxSource.attributes[1].name, 'data-astro-wysiwyg-video');
+
+  const mdx = {
+    type: 'element', tagName: 'figure', properties: {} as Record<string, unknown>, children: [],
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [mdx] },
+    { path: '/project/page.mdx', value: source },
+  );
+  assert.equal(mdx.properties['data-astro-wysiwyg-video'], '');
+  assert.equal(decodeMarker(String(mdx.properties['data-astro-wysiwyg'])).original, source);
+
+  const rehypeMdx = {
+    type: 'mdxJsxFlowElement', name: 'figure',
+    attributes: [] as Array<{ type: string; name: string; value: string }>, children: [],
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [rehypeMdx] },
+    { path: '/project/page.mdx', value: source },
+  );
+  assert.equal(rehypeMdx.attributes[0].name, 'data-astro-wysiwyg');
+  assert.equal(rehypeMdx.attributes[1].name, 'data-astro-wysiwyg-video');
+
+  const dynamic = source.replace('src="/assets/tour.mp4"', 'src={tour}');
+  assert.doesNotMatch(
+    await annotateAstroSource(dynamic, '/project/dynamic.astro', '/project') ?? '',
+    /data-astro-wysiwyg-video/,
+  );
+});
+
+test('annotates supported Astro, Markdown, and MDX native iframes', async (t) => {
+  const source = '<iframe src="/embed-preview" title="Project status" width="640" height="360" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts" allow="fullscreen" allowfullscreen></iframe>';
+  const astro = await annotateAstroSource(source, '/project/embed.astro', '/project');
+  assert.match(astro ?? '', /^<iframe [^>]*data-astro-wysiwyg="[A-Za-z0-9_-]+" data-astro-wysiwyg-iframe>/);
+  assert.equal(decodeMarker(markerFromHtml(astro ?? '')).original, source);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-iframe-transform-'));
+  const file = path.join(root, 'embed.astro');
+  await writeFile(file, source);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const resolved = await resolveAstroSourceMarker(root, file, '1:10');
+  assert.equal(decodeMarker(resolved).tag, 'iframe');
+
+  const html = {
+    type: 'html', value: source,
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  remarkEditableMedia({ root: '/project' })(
+    { type: 'root', children: [html] },
+    { path: '/project/embed.md', value: source },
+  );
+  assert.match(html.value, /^<iframe data-astro-wysiwyg="[A-Za-z0-9_-]+" data-astro-wysiwyg-iframe /);
+
+  const mdx = {
+    type: 'mdxJsxFlowElement', name: 'iframe', attributes: [] as Array<{ type: string; name: string; value: string }>, children: [],
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  remarkEditableMedia({ root: '/project' })(
+    { type: 'root', children: [mdx] },
+    { path: '/project/embed.mdx', value: source },
+  );
+  assert.equal(mdx.attributes[1].name, 'data-astro-wysiwyg-iframe');
+
+  const element = {
+    type: 'element', tagName: 'iframe', properties: {} as Record<string, unknown>, children: [],
+    position: { start: { offset: 0 }, end: { offset: source.length } },
+  };
+  rehypeEditableBlocks({ root: '/project' })(
+    { type: 'root', children: [element] },
+    { path: '/project/embed.md', value: source },
+  );
+  assert.equal(element.properties['data-astro-wysiwyg-iframe'], '');
+  assert.equal(decodeMarker(String(element.properties['data-astro-wysiwyg'])).original, source);
+
+  const dynamic = source.replace('src="/embed-preview"', 'src={embedUrl}');
+  assert.doesNotMatch(
+    await annotateAstroSource(dynamic, '/project/dynamic.astro', '/project') ?? '',
+    /data-astro-wysiwyg-iframe/,
+  );
+});
+
+test('annotates static blockquotes, code blocks, and dividers in Astro, Markdown, and MDX', async (t) => {
+  const astroSource = '<blockquote><p>Quote</p></blockquote>\n<pre><code>const x = 1;</code></pre>\n<hr />';
+  const astro = await annotateAstroSource(astroSource, '/project/blocks.astro', '/project') ?? '';
+  assert.match(astro, /<blockquote data-astro-wysiwyg="[A-Za-z0-9_-]+"><p data-astro-wysiwyg=/);
+  assert.match(astro, /<pre data-astro-wysiwyg="[A-Za-z0-9_-]+"><code>/);
+  assert.match(astro, /<hr\s+data-astro-wysiwyg="[A-Za-z0-9_-]+"\s*\/>/);
+  assert.equal(decodeMarker(markerFromHtml(astro.match(/<blockquote[^>]+>/)![0])).tag, 'blockquote');
+  assert.match(await annotateAstroSource('<hr>', '/project/divider.astro', '/project') ?? '', /<hr data-astro-wysiwyg=/);
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-divider-transform-'));
+  const dividerFile = path.join(root, 'divider.astro');
+  await writeFile(dividerFile, '<hr />');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.equal(decodeMarker(await resolveAstroSourceMarker(root, dividerFile, '1:2')).tag, 'hr');
+
+  for (const [nodeType, tagName, source] of [
+    ['blockquote', 'blockquote', '> Quote'],
+    ['code', 'pre', '```\ncode\n```'],
+    ['thematicBreak', 'hr', '---'],
+  ] as const) {
+    const node = {
+      type: nodeType,
+      data: {} as { hProperties?: Record<string, unknown> },
+      position: { start: { offset: 0 }, end: { offset: source.length } },
+    };
+    const file = { path: '/project/blocks.mdx', value: source, data: {} as { astroWysiwygStaticMarkers?: unknown[] } };
+    remarkEditableMedia({ root: '/project' })({ type: 'root', children: [node] }, file);
+    assert.equal(decodeMarker(String(node.data.hProperties?.['data-astro-wysiwyg'])).tag, tagName);
+    const rendered = { type: 'element', tagName, properties: {} as Record<string, unknown>, children: [] };
+    rehypeEditableBlocks({ root: '/project' })({ type: 'root', children: [rendered] }, file);
+    assert.equal(decodeMarker(String(rendered.properties['data-astro-wysiwyg'])).tag, tagName);
+  }
+
+  for (const [tagName, source, children] of [
+    ['blockquote', '> Quote', [{ type: 'element', tagName: 'p', properties: {}, children: [{ type: 'text', value: 'Quote' }] }]],
+    ['pre', '```\ncode\n```', [{ type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: 'code' }] }]],
+    ['hr', '---', []],
+  ] as const) {
+    const node = {
+      type: 'element', tagName, properties: {} as Record<string, unknown>, children,
+      position: { start: { offset: 0 }, end: { offset: source.length } },
+    };
+    rehypeEditableBlocks({ root: '/project' })(
+      { type: 'root', children: [node] },
+      { path: '/project/blocks.md', value: source },
+    );
+    assert.equal(decodeMarker(String(node.properties['data-astro-wysiwyg'])).tag, tagName);
+  }
+
+  const dynamic = '<blockquote><p>{quote}</p></blockquote>\n<hr class={dividerClass} />';
+  assert.doesNotMatch(await annotateAstroSource(dynamic, '/project/dynamic.astro', '/project') ?? '', /data-astro-wysiwyg/);
 });
 
 test('annotates a static Markdown list as one editable block', () => {

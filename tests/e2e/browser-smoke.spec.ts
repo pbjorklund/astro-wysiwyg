@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { expect, test } from './coverage.ts';
 
 const astroFile = '.tmp/e2e-site/src/pages/index.astro';
+const canonicalAstroFile = 'demo/src/pages/index.astro';
 const markdownFile = '.tmp/e2e-site/src/pages/article.md';
 
 test('edits, selects, formats, links, and saves rich text', async ({ page }) => {
@@ -40,6 +41,7 @@ test('edits, selects, formats, links, and saves rich text', async ({ page }) => 
   await expect.poll(async () => readFile(astroFile, 'utf8')).toContain(
     '<p class="lead"><b>Cross <a href="/docs">browser</a> edit</b></p>',
   );
+  await expect.poll(async () => readFile(canonicalAstroFile, 'utf8')).not.toContain('Cross browser edit');
 });
 
 test('uses one roving stop for editable block focus', async ({ page }) => {

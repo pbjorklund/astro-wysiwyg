@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Window } from 'happy-dom';
 import {
+  CREATE_COLLECTION_ENTRY_EVENT,
   DEFAULT_PREFERENCES,
   FRONTMATTER_EVENT,
   PREFERENCES_EVENT,
@@ -63,7 +64,7 @@ test('updates preferences and dispatches changes even when storage fails', () =>
   assert.deepEqual(updatePreferences({ autosave: false }), { enabled: false, autosave: false, highlights: true });
 });
 
-test('toolbar app renders settings, updates toggles, opens frontmatter, and follows placement', () => {
+test('toolbar app renders settings, opens authoring actions, and follows placement', () => {
   const window = installWindow();
   const canvas = window.document.createElement('div');
   let placementHandler: ((event: { placement: 'bottom-left' }) => void) | undefined;
@@ -74,6 +75,10 @@ test('toolbar app renders settings, updates toggles, opens frontmatter, and foll
   const toolbarWindow = canvas.querySelector<HTMLElement>('astro-dev-toolbar-window');
   assert.ok(toolbarWindow);
   assert.equal((toolbarWindow as HTMLElement & { placement: string }).placement, 'bottom-center');
+  const mark = toolbarWindow.querySelector<SVGElement>('.mark svg');
+  assert.equal(mark?.getAttribute('data-icon'), 'file-pen-line');
+  assert.equal(mark?.getAttribute('aria-hidden'), 'true');
+  assert.equal(toolbarWindow.querySelector('h1')?.textContent, 'Page editor');
   const toggles = [...canvas.querySelectorAll<HTMLElement>('astro-dev-toolbar-toggle')]
     .map((toggle) => (toggle as HTMLElement & { input: HTMLInputElement }).input);
   assert.equal(toggles.length, 3);
@@ -82,9 +87,14 @@ test('toolbar app renders settings, updates toggles, opens frontmatter, and foll
   assert.equal(readPreferences().autosave, false);
 
   let frontmatterOpened = false;
+  let collectionEntryOpened = false;
   window.document.addEventListener(FRONTMATTER_EVENT, () => { frontmatterOpened = true; });
+  window.document.addEventListener(CREATE_COLLECTION_ENTRY_EVENT, () => { collectionEntryOpened = true; });
   canvas.querySelector<HTMLButtonElement>('.frontmatter button')?.click();
+  canvas.querySelector<HTMLButtonElement>('.collection-entry button')?.click();
   assert.equal(frontmatterOpened, true);
+  assert.equal(collectionEntryOpened, true);
+  assert.match(canvas.querySelector('.collection-entry p')?.textContent ?? '', /local content collection/i);
 
   placementHandler?.({ placement: 'bottom-left' });
   assert.equal((toolbarWindow as HTMLElement & { placement: string }).placement, 'bottom-left');

@@ -1,0 +1,10 @@
+---
+interface Props {
+  label: string;
+}
+
+const { label } = Astro.props;
+---
+<aside class="demo-card" aria-label={label}>
+  <slot />
+</aside>

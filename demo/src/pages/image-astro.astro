@@ -1,0 +1,17 @@
+---
+import sourcePhoto from '../assets/replace-source-original.png';
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="Astro image replacement"
+  description="Replace public and imported images without rewriting their surrounding Astro markup."
+>
+  <h1>Astro image replacement</h1>
+  <p>Select either image to open the source-backed <strong>Replace image</strong> action.</p>
+
+  <h2>Imported source asset</h2>
+  <p class="image-example"><a href="/images"><img src={sourcePhoto.src} alt="Astro imported image example" width="120" height="120" loading="lazy" /></a> This Astro caption and link stay in place.</p>
+
+  <h2>Public asset</h2>
+  <p class="image-example"><img src="/assets/replace-original.png" alt="Astro public image example" width="120" height="120" loading="lazy" /> This public-image caption stays in place.</p>
+</BaseLayout>

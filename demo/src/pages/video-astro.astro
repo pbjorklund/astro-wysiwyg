@@ -1,0 +1,19 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="Astro video replacement"
+  description="Replace a native source-backed Astro video while preserving tracks and fallback content."
+>
+  <h1>Astro video replacement</h1>
+  <p>Select the native player, then use <strong>Replace video</strong> to review or change its source, poster, accessibility text, and playback settings.</p>
+
+  <figure class="video-example">
+    <video controls preload="metadata" aria-label="Astro replaceable video example" poster="/assets/astro-wysiwyg-video-poster.png" playsinline>
+      <source src="/assets/astro-wysiwyg-demo.mp4" type="video/mp4" />
+      <track kind="captions" src="/assets/astro-wysiwyg-demo.vtt" srclang="en" label="English" default />
+      <a href="/assets/astro-wysiwyg-demo.mp4" download>Download the Astro video example</a>.
+    </video>
+    <figcaption>This caption, caption track, and fallback text remain source-backed during replacement.</figcaption>
+  </figure>
+</BaseLayout>

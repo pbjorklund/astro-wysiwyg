@@ -4,11 +4,13 @@ import { parse } from '@astrojs/compiler';
 import { EDITABLE_BLOCK_TAGS } from './editable-tags.ts';
 import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
 import { isInsideProjectRoot } from './project-path.ts';
+import { inspectSourceVideoFigure } from './video-markup.ts';
+import { inspectSourceIframe } from './iframe-markup.ts';
 
 const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
-  'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
+  'img', 'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
 ]);
 
 interface Position {
@@ -19,6 +21,7 @@ interface Position {
 interface AstroAttribute {
   kind: string;
   name: string;
+  value?: string;
 }
 
 interface AstroNode {
@@ -69,9 +72,18 @@ export async function resolveAstroSourceMarker(
     const tag = node.name?.toLowerCase();
     const start = node.position?.start?.offset;
     const end = node.position?.end?.offset;
-    if (!tag || !BLOCK_TAGS.has(tag) || start === undefined || end === undefined) return;
-    if (offset < start || offset > end || !node.children?.length) return;
-    if (node.children.every(isStaticInlineNode)) {
+    if (!tag || start === undefined || end === undefined) return;
+    if (offset < start || offset > end) return;
+    const sourceEnd = nodeSourceEnd(source, tag, end);
+    const original = source.slice(start, sourceEnd);
+    if ((tag === 'figure' && inspectSourceVideoFigure(original))
+      || (tag === 'iframe' && inspectSourceIframe(original))
+      || (tag === 'hr' && isStaticDivider(original))) {
+      matches.push(node);
+      return;
+    }
+    if (!node.children?.length || !BLOCK_TAGS.has(tag)) return;
+    if (node.children.every(isStaticInlineNode) && node.children.every((child) => hasResolvableImageSources(child, source))) {
       matches.push(node);
       return;
     }
@@ -94,11 +106,12 @@ export async function resolveAstroSourceMarker(
     }
     throw new Error('This text is not a static editable block.');
   }
-  const original = source.slice(start, end);
+  const sourceEnd = nodeSourceEnd(source, tag, end);
+  const original = source.slice(start, sourceEnd);
   return encodeMarker(createMarker(
     path.relative(rootPath, file).split(path.sep).join('/'),
     start,
-    end,
+    sourceEnd,
     original,
     'astro',
     tag,
@@ -217,17 +230,48 @@ export async function annotateAstroSource(
     const tag = node.name?.toLowerCase();
     const start = node.position?.start?.offset;
     const end = node.position?.end?.offset;
-    if (!tag || !BLOCK_TAGS.has(tag) || start === undefined || end === undefined) return;
-    if (!node.children?.length || !node.children.every(isStaticInlineNode)) return;
+    if (!tag || start === undefined || end === undefined) return;
+    const sourceEnd = nodeSourceEnd(source, tag, end);
+    const original = source.slice(start, sourceEnd);
+    const openingEnd = findOpeningTagEnd(source, start, sourceEnd);
+    const mediaAttribute = tag === 'figure' && inspectSourceVideoFigure(original)
+      ? 'data-astro-wysiwyg-video'
+      : tag === 'iframe' && inspectSourceIframe(original)
+        ? 'data-astro-wysiwyg-iframe'
+        : undefined;
+    if (mediaAttribute) {
+      /* c8 ignore next -- positioned compiler elements always have a complete opening tag. */
+      if (openingEnd < 0) return;
+      const marker = encodeMarker(createMarker(
+        relative.split(path.sep).join('/'), start, sourceEnd, original, 'astro', tag,
+      ));
+      insertions.push({
+        offset: openingEnd,
+        value: ` data-astro-wysiwyg="${marker}" ${mediaAttribute}`,
+      });
+      return;
+    }
+    if (tag === 'hr' && isStaticDivider(original)) {
+      /* c8 ignore next -- positioned compiler elements always have a complete opening tag. */
+      if (openingEnd < 0) return;
+      const marker = encodeMarker(createMarker(
+        relative.split(path.sep).join('/'), start, sourceEnd, original, 'astro', tag,
+      ));
+      const offset = source[openingEnd - 1] === '/' ? openingEnd - 1 : openingEnd;
+      insertions.push({ offset, value: ` data-astro-wysiwyg="${marker}"` });
+      return;
+    }
+    if (!BLOCK_TAGS.has(tag)
+      || !node.children?.length
+      || !node.children.every(isStaticInlineNode)
+      || !node.children.every((child) => hasResolvableImageSources(child, source))) return;
 
-    const original = source.slice(start, end);
-    const openingEnd = findOpeningTagEnd(source, start, end);
     /* c8 ignore next -- positioned static compiler elements always have matching opening and closing tags. */
     if (openingEnd < 0 || !original.toLowerCase().endsWith(`</${tag}>`)) return;
     const marker = encodeMarker(createMarker(
       relative.split(path.sep).join('/'),
       start,
-      end,
+      sourceEnd,
       original,
       'astro',
       tag,
@@ -243,6 +287,14 @@ export async function annotateAstroSource(
   return transformed;
 }
 
+function nodeSourceEnd(source: string, tag: string, end: number): number {
+  return tag === 'hr' && source[end] === '>' ? end + 1 : end;
+}
+
+function isStaticDivider(source: string): boolean {
+  return /^<hr\s*\/?>$/i.test(source.trim());
+}
+
 function visit(node: AstroNode, callback: (node: AstroNode) => void): void {
   callback(node);
   for (const child of node.children ?? []) visit(child, callback);
@@ -251,8 +303,48 @@ function visit(node: AstroNode, callback: (node: AstroNode) => void): void {
 function isStaticInlineNode(node: AstroNode): boolean {
   if (node.type === 'text' || node.type === 'comment') return true;
   if (node.type !== 'element' || !node.name || !INLINE_TAGS.has(node.name.toLowerCase())) return false;
-  if (!node.attributes!.every(isStaticHtmlAttribute)) return false;
+  const attributesSafe = node.name.toLowerCase() === 'img'
+    ? node.attributes!.every(isSafeImageAttribute)
+    : node.attributes!.every(isStaticHtmlAttribute);
+  if (!attributesSafe) return false;
   return node.children!.every(isStaticInlineNode);
+}
+
+function hasResolvableImageSources(node: AstroNode, source: string): boolean {
+  if (node.type !== 'element') return true;
+  if (node.name?.toLowerCase() === 'img') {
+    const expression = node.attributes?.find((attribute) => (
+      attribute.name === 'src' && attribute.kind === 'expression'
+    ))?.value;
+    if (expression) {
+      const importName = /^([A-Za-z_$][\w$]*)\.src$/.exec(expression)?.[1];
+      if (!importName || !hasDefaultImageImport(source, importName)) return false;
+    }
+  }
+  return node.children!.every((child) => hasResolvableImageSources(child, source));
+}
+
+function hasDefaultImageImport(source: string, importName: string): boolean {
+  const escapedName = importName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*import\\s+${escapedName}\\s+from\\s+["']\\.{1,2}\\/[A-Za-z0-9._/-]+\\.(?:gif|jpe?g|png|webp)["']\\s*;?`,
+  );
+  const importMatch = pattern.exec(source);
+  if (!importMatch) return false;
+  const sourceWithoutImport = source.slice(0, importMatch.index)
+    + source.slice(importMatch.index + importMatch[0].length);
+  const executableSource = sourceWithoutImport.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    '',
+  );
+  return [...executableSource.matchAll(new RegExp(`\\b${escapedName}\\b`, 'g'))].length === 1;
+}
+
+function isSafeImageAttribute(attribute: AstroAttribute): boolean {
+  if (attribute.name === 'src' && attribute.kind === 'expression') {
+    return /^[A-Za-z_$][\w$]*\.src$/.test(attribute.value!);
+  }
+  return isStaticHtmlAttribute(attribute);
 }
 
 function isStaticHtmlAttribute(attribute: AstroAttribute): boolean {

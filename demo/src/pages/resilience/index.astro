@@ -1,0 +1,28 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const routes = [
+  ['Queued saves', '/resilience/queue', 'Exercise coalesced writes while a save is in flight.'],
+  ['Session restore', '/resilience/session', 'Restore invalid, missing, and tag-changing sessions.'],
+  ['Pending drafts', '/resilience/pending', 'Review reload and source-conflict recovery.'],
+  ['Save failures', '/resilience/save-failure', 'Keep editing available after rejected or timed-out saves.'],
+  ['Guarded requests', '/resilience/guards', 'Reject invalid markers and source lookups safely.'],
+  ['Lifecycle resilience', '/resilience/resilience', 'Exercise duplicate setup, navigation, and disabled editing.'],
+  ['Detached blocks', '/resilience/detached', 'Handle source writes after the original DOM node detaches.'],
+] as const;
+---
+<BaseLayout title="Resilience routes" resilience>
+  <h1>Resilience-only test routes</h1>
+  <p>
+    These focused pages support deterministic browser fault injection. They use the same integration and
+    temporary demo copy as the user-facing examples.
+  </p>
+  <div class="demo-grid">
+    {routes.map(([title, href, description]) => (
+      <article class="demo-card">
+        <h2><a href={href}>{title}</a></h2>
+        <p>{description}</p>
+      </article>
+    ))}
+  </div>
+</BaseLayout>

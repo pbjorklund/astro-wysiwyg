@@ -1,5 +1,7 @@
 import { defineToolbarApp } from 'astro/toolbar';
+import { lucideIcon } from './lucide-icons.ts';
 import {
+  CREATE_COLLECTION_ENTRY_EVENT,
   FRONTMATTER_EVENT,
   type EditorPreferences,
   readPreferences,
@@ -40,23 +42,28 @@ export default defineToolbarApp({
         :host { color-scheme: dark; }
         header { display: flex; align-items: center; gap: 10px; }
         h1 { margin: 0; color: #fff; font: 600 22px/1.2 system-ui, sans-serif; }
-        .mark { display: grid; place-items: center; width: 32px; height: 32px; color: #13151a; background: #c4b5fd; border-radius: 8px; font: 700 19px/1 system-ui, sans-serif; }
+        .mark { display: grid; place-items: center; width: 36px; height: 36px; color: #13151a; background: #c4b5fd; border-radius: 8px; }
+        .mark svg { width: 22px; height: 22px; }
         .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; }
         .setting-row + .setting-row { border-top: 1px solid #343841; }
         h2 { margin: 0 0 5px; color: #fff; font: 400 16px/1.3 system-ui, sans-serif; }
         p { margin: 0; max-width: 430px; color: #b9bec7; font: 14px/1.5 system-ui, sans-serif; }
-        .frontmatter { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-top: 1px solid #343841; }
-        button { min-height: 36px; padding: 7px 12px; color: #fff; background: #6d28d9; border: 1px solid #8b5cf6; border-radius: 6px; font: 600 14px/1.2 system-ui, sans-serif; cursor: pointer; }
+        .authoring-action { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-top: 1px solid #343841; }
+        button { min-height: 44px; padding: 7px 12px; color: #fff; background: #6d28d9; border: 1px solid #8b5cf6; border-radius: 6px; font: 600 14px/1.2 system-ui, sans-serif; cursor: pointer; }
         button:hover { background: #7c3aed; }
         button:focus-visible { outline: 3px solid #c4b5fd; outline-offset: 2px; }
         footer { margin-top: 8px; padding-top: 14px; border-top: 1px solid #343841; color: #8d929c; font: 13px/1.4 system-ui, sans-serif; }
       </style>
-      <header><span class="mark" aria-hidden="true">E</span><h1>Page editor</h1></header>
+      <header><span class="mark" aria-hidden="true">${lucideIcon('file-pen-line')}</span><h1>Page editor</h1></header>
       <hr />
       <section class="settings" aria-label="Page editor settings"></section>
-      <section class="frontmatter" aria-labelledby="frontmatter-title">
+      <section class="frontmatter authoring-action" aria-labelledby="frontmatter-title">
         <span><h2 id="frontmatter-title">Article metadata</h2><p>Edit the current Markdown or MDX page's frontmatter.</p></span>
         <button type="button">Edit frontmatter</button>
+      </section>
+      <section class="collection-entry authoring-action" aria-labelledby="collection-entry-title">
+        <span><h2 id="collection-entry-title">New collection entry</h2><p>Create a validated file in a writable local content collection.</p></span>
+        <button type="button">Create entry</button>
       </section>
       <footer>Settings are stored in this browser for the current local site.</footer>
     `;
@@ -81,6 +88,9 @@ export default defineToolbarApp({
 
     windowElement.querySelector<HTMLButtonElement>('.frontmatter button')?.addEventListener('click', () => {
       document.dispatchEvent(new CustomEvent(FRONTMATTER_EVENT));
+    });
+    windowElement.querySelector<HTMLButtonElement>('.collection-entry button')?.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent(CREATE_COLLECTION_ENTRY_EVENT));
     });
 
     canvas.replaceChildren(windowElement);
