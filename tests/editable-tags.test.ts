@@ -4,7 +4,7 @@ import { EDITABLE_BLOCK_TAGS, MARKDOWN_EDITABLE_BLOCK_TAGS } from '../src/editab
 
 test('defines Markdown editable tags as a subset of the complete block policy', () => {
   assert.deepEqual(MARKDOWN_EDITABLE_BLOCK_TAGS, [
-    'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
+    'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'hr',
   ]);
   assert.deepEqual(EDITABLE_BLOCK_TAGS, [
     ...MARKDOWN_EDITABLE_BLOCK_TAGS,

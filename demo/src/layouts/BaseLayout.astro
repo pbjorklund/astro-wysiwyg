@@ -1,0 +1,116 @@
+---
+interface Props {
+  title: string;
+  description?: string;
+  resilience?: boolean;
+}
+
+const {
+  title,
+  description = 'Browse and edit Astro, Markdown, and MDX source-backed content.',
+  resilience = false,
+} = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <title>{title} | Astro WYSIWYG demo</title>
+    <slot name="head" />
+    <style is:global>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #1e293b;
+        background: #f8fafc;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      a { color: #6d28d9; text-underline-offset: .18em; }
+      a:hover { color: #4c1d95; }
+      a:focus-visible, button:focus-visible, input:focus-visible {
+        outline: 3px solid #0ea5e9;
+        outline-offset: 3px;
+      }
+      .skip-link {
+        position: fixed;
+        inset: 8px auto auto 8px;
+        z-index: 10;
+        padding: 8px 12px;
+        color: white;
+        background: #0f172a;
+        transform: translateY(-150%);
+      }
+      .skip-link:focus { transform: none; }
+      .site-header {
+        padding: 18px clamp(16px, 4vw, 48px);
+        color: #f8fafc;
+        background: #111827;
+        border-bottom: 4px solid #8b5cf6;
+      }
+      .brand-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px 24px;
+        max-width: 960px;
+        margin: 0 auto 14px;
+      }
+      .brand { color: inherit; font-size: 1.1rem; font-weight: 750; text-decoration: none; }
+      .surface-label { margin: 0; color: #c4b5fd; font-size: .82rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+      nav { max-width: 960px; margin: 0 auto; }
+      nav ul { display: flex; flex-wrap: wrap; gap: 7px 16px; margin: 0; padding: 0; list-style: none; }
+      nav a { color: #e2e8f0; }
+      main {
+        width: min(960px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: clamp(32px, 6vw, 72px) 0 80px;
+      }
+      main > :first-child { margin-top: 0; }
+      h1, h2, h3 { color: #0f172a; line-height: 1.15; }
+      h1 { max-width: 18ch; font-size: clamp(2rem, 6vw, 4.5rem); letter-spacing: -.04em; }
+      h2 { margin-top: 2.5rem; }
+      p, li { max-width: 68ch; font-size: 1.05rem; line-height: 1.7; }
+      .lead { color: #166534; font-family: Georgia, serif; font-size: clamp(1.3rem, 3vw, 1.65rem); }
+      .demo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 28px 0; }
+      .demo-card { padding: 18px; background: white; border: 1px solid #cbd5e1; border-radius: 12px; box-shadow: 0 8px 24px rgb(15 23 42 / 6%); }
+      .demo-card h2, .demo-card h3 { margin: 0 0 8px; font-size: 1.1rem; }
+      .demo-card p { margin: 0; font-size: .95rem; }
+      code { padding: .12em .35em; background: #e2e8f0; border-radius: 4px; }
+      @media (max-width: 420px) {
+        .site-header { padding-inline: 16px; }
+        main { width: min(100% - 24px, 960px); }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to demo content</a>
+    <header class="site-header">
+      <div class="brand-row">
+        <a class="brand" href="/">Astro WYSIWYG demo</a>
+        <p class="surface-label">{resilience ? 'Resilience target' : 'Development surface'}</p>
+      </div>
+      <nav aria-label="Demo pages">
+        <ul>
+          <li><a href="/">Astro</a></li>
+          <li><a href="/article">Markdown</a></li>
+          <li><a href="/mdx">MDX</a></li>
+          <li><a href="/blocks">Blocks</a></li>
+          <li><a href="/content-blocks">Content types</a></li>
+          <li><a href="/images">Images</a></li>
+          <li><a href="/videos">Videos</a></li>
+          <li><a href="/iframes">Iframes</a></li>
+          <li><a href="/links">Links</a></li>
+          <li><a href="/lists">Lists</a></li>
+          <li><a href="/headings">Headings</a></li>
+          <li><a href="/interactive">Interactive guards</a></li>
+          <li><a href="/resilience/">Resilience routes</a></li>
+        </ul>
+      </nav>
+    </header>
+    <main id="main-content"><slot /></main>
+  </body>
+</html>

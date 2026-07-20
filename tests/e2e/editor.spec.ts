@@ -1,15 +1,24 @@
 import { expect, test } from './coverage.ts';
 import type { Page } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 const astroFile = '.tmp/e2e-site/src/pages/index.astro';
 const markdownFile = '.tmp/e2e-site/src/pages/article.md';
+const mdxFile = '.tmp/e2e-site/src/pages/mdx.mdx';
 const cardFile = '.tmp/e2e-site/src/content/articles/example/index.md';
 const linkFile = '.tmp/e2e-site/src/pages/links.md';
 const listFile = '.tmp/e2e-site/src/pages/lists.md';
 const headingFile = '.tmp/e2e-site/src/pages/headings.md';
-const queueFile = '.tmp/e2e-site/src/pages/queue.md';
+const queueFile = '.tmp/e2e-site/src/pages/resilience/queue.md';
 const blocksFile = '.tmp/e2e-site/src/pages/blocks.md';
+const imagesFile = '.tmp/e2e-site/src/pages/images.md';
+const uploadedImageFile = '.tmp/e2e-site/public/assets/workflow.png';
+const uploadedReplacementFile = '.tmp/e2e-site/public/assets/uploaded-replacement.png';
+const videosFile = '.tmp/e2e-site/src/pages/videos.md';
+const uploadedVideoFile = '.tmp/e2e-site/public/assets/walkthrough.mp4';
+const videoAstroFile = '.tmp/e2e-site/src/pages/video-astro.astro';
+const videoMdxFile = '.tmp/e2e-site/src/pages/video-mdx.mdx';
+const replacementVideoFile = '.tmp/e2e-site/public/assets/replacement-upload.mp4';
 
 async function seedActiveSessionOnNextLoad(page: Page, patch: Record<string, unknown>): Promise<void> {
   const session = await page.evaluate(() => (
@@ -42,13 +51,14 @@ test('edits an Astro block with keyboard formatting and saves to disk', async ({
   const editorToolbar = page.locator('#astro-wysiwyg-toolbar').locator('[role="toolbar"]');
   await expect(editorToolbar).toBeVisible();
   await paragraph.press('Alt+F10');
-  await expect(editorToolbar.getByRole('button', { name: 'Bold' })).toBeFocused();
+  await expect(editorToolbar.getByRole('button', { name: 'Text style: Paragraph' })).toBeFocused();
   await paragraph.click();
   await paragraph.press('Control+a');
   await paragraph.pressSequentially('Saved from the browser');
   await paragraph.press('Control+a');
   await paragraph.press('Control+b');
   await expect(paragraph.locator('b, strong')).toHaveText('Saved from the browser');
+  await expect(editorToolbar.getByRole('button', { name: 'Bold' })).toHaveAttribute('aria-pressed', 'true');
 
   const after = await paragraph.evaluate((element) => ({
     color: getComputedStyle(element).color,
@@ -70,6 +80,81 @@ test('edits an Astro block with keyboard formatting and saves to disk', async ({
   expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('1');
 });
 
+test('edits MDX prose beside a component boundary', async ({ page }) => {
+  await page.goto('/mdx');
+  const paragraph = page.getByText('Edit this MDX paragraph and save it to the source file.', { exact: true });
+  await expect(paragraph).toHaveAttribute('data-astro-wysiwyg', /.+/);
+  await paragraph.click();
+  await paragraph.press('Control+a');
+  await paragraph.pressSequentially('Saved MDX paragraph.');
+
+  await expect.poll(async () => readFile(mdxFile, 'utf8')).toContain('Saved MDX paragraph.');
+  await expect(page.getByRole('complementary', { name: 'Component boundary' })).toContainText(
+    'Component output stays separate from the editable MDX prose around it.',
+  );
+});
+
+test('exposes every toolbar action without horizontal scrolling at narrow and zoom-equivalent viewports', async ({ page }) => {
+  for (const width of [320, 400]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto('/');
+    await expect(page.getByRole('navigation', { name: 'Demo pages' })).toBeVisible();
+    const paragraph = page.locator('p.lead');
+    await paragraph.click();
+    const toolbar = page.locator('#astro-wysiwyg-toolbar').getByRole('toolbar', { name: 'Edit text' });
+    await expect(toolbar).toBeVisible();
+    const bounds = await toolbar.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(8);
+    expect(bounds!.width).toBeLessThanOrEqual(width - 16);
+    expect(await toolbar.evaluate((element) => getComputedStyle(element).overflowX)).not.toMatch(/auto|scroll/);
+    const targets = await toolbar.locator('[data-toolbar-item]:not([hidden])').evaluateAll((elements) => elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, left: rect.left, right: rect.right };
+    }));
+    for (const target of targets) {
+      expect(target.width).toBeGreaterThanOrEqual(44);
+      expect(target.height).toBeGreaterThanOrEqual(44);
+      expect(target.left).toBeGreaterThanOrEqual(8);
+      expect(target.right).toBeLessThanOrEqual(width - 8);
+    }
+    for (const name of ['Text style: Paragraph', 'Insert']) {
+      await toolbar.getByRole('button', { name }).click();
+      const menu = toolbar.getByRole('menu', { name: name.startsWith('Text') ? 'Text style' : 'Insert' });
+      const menuBounds = await menu.boundingBox();
+      expect(menuBounds).not.toBeNull();
+      expect(menuBounds!.x).toBeGreaterThanOrEqual(8);
+      expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(width - 8);
+      await page.keyboard.press('Escape');
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await paragraph.press('Escape');
+  }
+
+  // A 320 CSS pixel layout is the reflow width of a 640 pixel viewport at 200% browser zoom.
+});
+
+test('keeps toolbar boundaries, state, and focus visible in forced colors', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active' });
+  await page.goto('/keyboard');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await paragraph.press('Alt+F10');
+  const toolbar = page.locator('#astro-wysiwyg-toolbar').getByRole('toolbar', { name: 'Edit text' });
+  const style = toolbar.getByRole('button', { name: 'Text style: Paragraph' });
+  await expect(style).toBeFocused();
+  const styles = await style.evaluate((element) => {
+    const computed = getComputedStyle(element);
+    return { border: computed.borderStyle, outline: computed.outlineStyle, minWidth: computed.minWidth };
+  });
+  expect(styles.border).not.toBe('none');
+  expect(styles.outline).not.toBe('none');
+  expect(Number.parseFloat(styles.minWidth)).toBeGreaterThanOrEqual(44);
+  await style.click();
+  await expect(style).toHaveAttribute('aria-expanded', 'true');
+  expect(await style.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe('none');
+});
+
 test('edits a rendered frontmatter title without leaving edit mode', async ({ page }) => {
   await page.addInitScript(() => {
     sessionStorage.setItem('wysiwyg-loads', String(Number(sessionStorage.getItem('wysiwyg-loads') ?? 0) + 1));
@@ -79,12 +164,12 @@ test('edits a rendered frontmatter title without leaving edit mode', async ({ pa
   await title.click();
   await expect(title).toHaveAttribute('contenteditable', 'true');
   const editor = page.locator('#astro-wysiwyg-toolbar');
-  await expect(editor.getByRole('button', { name: 'Add block below' })).toBeDisabled();
+  await expect(editor.getByRole('button', { name: 'Insert' })).toBeDisabled();
   await expect(editor.getByRole('button', { name: 'Delete block' })).toBeDisabled();
   await title.press('End');
   await title.pressSequentially(' updated');
 
-  await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Markdown fixture updated');
+  await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Markdown editing updated');
   await page.waitForTimeout(2_000);
   await expect(title).toHaveAttribute('contenteditable', 'true');
   expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('1');
@@ -92,7 +177,7 @@ test('edits a rendered frontmatter title without leaving edit mode', async ({ pa
   await page.reload();
   await expect(title).toHaveAttribute('contenteditable', 'true');
   expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('2');
-  await editor.getByRole('button', { name: 'Add block below' }).evaluate((button) => {
+  await editor.locator('[data-action="add-block"]').evaluate((button) => {
     (button as HTMLButtonElement).disabled = false;
     (button as HTMLButtonElement).click();
   });
@@ -147,7 +232,7 @@ test('keeps the frontmatter panel open when a submitted field changed on disk', 
   expect(submitted).toEqual({
     frontmatter: 'update',
     contextMarker: expect.any(String),
-    changes: { title: { value: 'Editor title', original: 'Markdown fixture' } },
+    changes: { title: { value: 'Editor title', original: 'Markdown editing' } },
   });
 });
 
@@ -187,7 +272,7 @@ test('restores unsaved frontmatter after navigation and reload until it is saved
   await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
   await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Recovered frontmatter');
   expect(submittedChanges).toEqual({
-    title: { value: 'Recovered frontmatter', original: 'Markdown fixture' },
+    title: { value: 'Recovered frontmatter', original: 'Markdown editing' },
     tags: { value: 'draft, recovered', original: '["astro", "markdown"]' },
     aiDisclaimer: { value: true, original: 'false' },
   });
@@ -207,7 +292,7 @@ test('discards frontmatter drafts on cancel and tolerates unavailable session st
   await title.fill('Discard this draft');
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft')))
     .not.toBeNull();
-  await title.fill('Markdown fixture');
+  await title.fill('Markdown editing');
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('astro-wysiwyg-frontmatter-draft')))
     .toBeNull();
   await title.fill('Discard this draft');
@@ -239,7 +324,7 @@ test('discards frontmatter drafts on cancel and tolerates unavailable session st
     sessionStorage.setItem('astro-wysiwyg-frontmatter-draft', JSON.stringify({
       pathname: '/article',
       contextMarker: marker,
-      changes: { title: { original: 'Markdown fixture', value: true } },
+      changes: { title: { original: 'Markdown editing', value: true } },
     }));
   }, { marker: contextMarker });
   await page.reload();
@@ -264,6 +349,893 @@ test('discards frontmatter drafts on cancel and tolerates unavailable session st
   await expect(dialog).not.toBeVisible();
 });
 
+test('keeps layout, focus, selection, scroll, and session stable through manual save and autosave', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/keyboard');
+  await page.evaluate(() => {
+    document.body.style.minHeight = '2400px';
+    scrollTo(0, 320);
+  });
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  await paragraph.evaluate((element) => {
+    element.dataset.saveStabilityIdentity = 'original';
+    document.querySelector<HTMLElement>('header')!.dataset.saveStabilityIdentity = 'original';
+    element.textContent = 'Stable selection through repeated saves.';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    const text = element.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 7);
+    range.setEnd(text, 16);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents = [];
+    document.addEventListener('astro:before-swap', () => {
+      (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents?.push('before-swap');
+    });
+    document.addEventListener('astro:page-load', () => {
+      (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents?.push('page-load');
+    });
+  });
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const status = editor.getByRole('status');
+  await expect(status).toHaveText('Unsaved');
+
+  const snapshot = () => page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>('main > p')!;
+    const toolbar = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
+      ?.querySelector<HTMLElement>('[role="toolbar"]')!;
+    const selection = getSelection();
+    const blockRect = block.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const session = JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}') as {
+      html?: string;
+      pathname?: string;
+      tag?: string;
+    };
+    return {
+      blockIdentity: block.dataset.saveStabilityIdentity,
+      shellIdentity: document.querySelector<HTMLElement>('header')?.dataset.saveStabilityIdentity,
+      blockRect: [blockRect.x, blockRect.y, blockRect.width, blockRect.height],
+      toolbarRect: [toolbarRect.x, toolbarRect.y, toolbarRect.width, toolbarRect.height],
+      focused: document.activeElement === block,
+      selection: selection ? [selection.anchorOffset, selection.focusOffset, selection.toString()] : [],
+      scroll: [scrollX, scrollY],
+      session: { html: session.html, pathname: session.pathname, tag: session.tag },
+      events: (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents ?? [],
+    };
+  });
+  const before = await snapshot();
+  const save = editor.getByRole('button', { name: 'Save' });
+  await save.click();
+  await expect(status).toHaveText('Saving...');
+  await save.click();
+  await expect.poll(async () => readFile('.tmp/e2e-site/src/pages/keyboard.md', 'utf8'))
+    .toContain('Stable selection through repeated saves.');
+  await expect(status).toHaveText('Saved');
+  await page.waitForTimeout(1_000);
+
+  expect(await snapshot()).toEqual(before);
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
+      detail: { enabled: true, autosave: true, highlights: true },
+    }));
+  });
+  await paragraph.evaluate((element) => {
+    const saveStatuses: string[] = [];
+    const status = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
+      ?.querySelector<HTMLElement>('[role="status"]')!;
+    new MutationObserver(() => saveStatuses.push(status.textContent ?? '')).observe(status, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    (window as Window & { __saveStatuses?: string[] }).__saveStatuses = saveStatuses;
+    element.textContent = 'Stable selection through autosave.';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    const text = element.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 7);
+    range.setEnd(text, 16);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents = [];
+  });
+  await expect(status).toHaveText('Unsaved');
+  const beforeAutosave = await snapshot();
+  await expect(status).toHaveText('Saved');
+  await expect.poll(async () => readFile('.tmp/e2e-site/src/pages/keyboard.md', 'utf8'))
+    .toContain('Stable selection through autosave.');
+  await page.waitForTimeout(1_000);
+
+  expect(await page.evaluate(() => {
+    const statuses = (window as Window & { __saveStatuses?: string[] }).__saveStatuses ?? [];
+    return statuses.filter((value, index) => index === 0 || value !== statuses[index - 1]);
+  })).toEqual(['Unsaved', 'Saving...', 'Saved']);
+  expect(await snapshot()).toEqual(beforeAutosave);
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+});
+
+test('keeps a rendered content-collection edit stable through save', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/cards');
+  const title = page.locator('h2.card-title');
+  await title.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await expect(editor.getByRole('toolbar', { name: 'Edit text' })).toBeVisible();
+  await title.evaluate((element) => {
+    element.dataset.saveStabilityIdentity = 'original';
+    element.textContent = 'Stable rendered card title';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents = [];
+    document.addEventListener('astro:before-swap', () => {
+      (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents?.push('before-swap');
+    });
+    document.addEventListener('astro:page-load', () => {
+      (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents?.push('page-load');
+    });
+  });
+  const before = await page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>('h2.card-title')!;
+    const toolbar = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
+      ?.querySelector<HTMLElement>('[role="toolbar"]')!;
+    const blockRect = block.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    return {
+      block: [blockRect.x, blockRect.y, blockRect.width, blockRect.height],
+      toolbar: [toolbarRect.x, toolbarRect.y, toolbarRect.width, toolbarRect.height],
+      scroll: [scrollX, scrollY],
+    };
+  });
+
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect(editor.getByRole('status')).toHaveText('Saved');
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Stable rendered card title"');
+  await page.waitForTimeout(2_500);
+
+  await expect(title).toHaveAttribute('data-save-stability-identity', 'original');
+  await expect(title).toHaveAttribute('contenteditable', 'true');
+  await expect(title).toBeFocused();
+  expect(await title.evaluate((element) => getSelection()?.toString())).toBe('Stable rendered card title');
+  expect(await page.evaluate(() => (
+    (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents ?? []
+  ))).toEqual([]);
+  expect(await page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>('h2.card-title')!;
+    const toolbar = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
+      ?.querySelector<HTMLElement>('[role="toolbar"]')!;
+    const blockRect = block.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    return {
+      block: [blockRect.x, blockRect.y, blockRect.width, blockRect.height],
+      toolbar: [toolbarRect.x, toolbarRect.y, toolbarRect.width, toolbarRect.height],
+      scroll: [scrollX, scrollY],
+    };
+  })).toEqual(before);
+});
+
+test('allows a genuine external content change to reload after an editor save', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+    const key = 'astro-wysiwyg-external-reloads';
+    sessionStorage.setItem(key, String(Number(sessionStorage.getItem(key) ?? 0) + 1));
+  });
+  await page.goto('/cards');
+  const title = page.locator('h2.card-title');
+  await title.click();
+  await title.evaluate((element) => {
+    element.textContent = 'Editor save before external change';
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect(editor.getByRole('status')).toHaveText('Saved');
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Editor save before external change"');
+  const loadsBeforeExternalWrite = Number(await page.evaluate(() => (
+    sessionStorage.getItem('astro-wysiwyg-external-reloads')
+  )));
+  await page.waitForTimeout(300);
+
+  const editorSource = await readFile(cardFile, 'utf8');
+  await writeFile(cardFile, editorSource.replace(
+    'title: "Editor save before external change"',
+    'title: "External content change"',
+  ));
+
+  await expect.poll(async () => Number(await page.evaluate(() => (
+    sessionStorage.getItem('astro-wysiwyg-external-reloads')
+  )))).toBeGreaterThan(loadsBeforeExternalWrite);
+  await expect.poll(async () => {
+    const token = await title.getAttribute('data-astro-wysiwyg');
+    if (!token) return '';
+    return (JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as { original?: string }).original ?? '';
+  }).toContain('External content change');
+});
+
+test('uploads, inserts, renders, selects, and removes a source-backed image', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/images');
+  const target = page.getByText('Select this paragraph, then use', { exact: false });
+  await target.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await editor.getByRole('button', { name: 'Link' }).click();
+  const linkDialog = editor.getByRole('dialog', { name: 'Edit link' });
+  await expect(linkDialog).toBeVisible();
+  await editor.getByRole('button', { name: 'Insert', exact: true }).click();
+  await editor.getByRole('menuitem', { name: 'Image' }).click();
+  const dialog = editor.getByRole('dialog', { name: 'Insert image' });
+  await expect(dialog).toBeVisible();
+  await expect(linkDialog).not.toBeVisible();
+  await dialog.getByLabel('Image file', { exact: true }).setInputFiles({
+    name: 'Project Diagram.PNG',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  });
+  await expect(dialog.getByLabel('Destination name')).toHaveValue('project-diagram.png');
+  await dialog.getByLabel('Destination name').fill('workflow.png');
+  await dialog.getByLabel('Alt text').fill('Project workflow diagram');
+  await dialog.getByRole('button', { name: 'Upload image' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/workflow.png');
+  await expect(dialog.getByRole('button', { name: 'Upload image' })).toBeDisabled();
+  await expect(dialog.getByLabel('Image file', { exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel('Destination name')).toBeDisabled();
+  await expect.poll(async () => (await readFile(uploadedImageFile)).subarray(0, 8).toString('hex'))
+    .toBe('89504e470d0a1a0a');
+
+  await dialog.getByRole('button', { name: 'Insert image' }).click();
+  await expect(dialog).not.toBeVisible();
+  let image = page.getByRole('img', { name: 'Project workflow diagram' });
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await expect.poll(async () => readFile(imagesFile, 'utf8'))
+    .toContain('![Project workflow diagram](/assets/workflow.png)');
+
+  await page.reload();
+  image = page.getByRole('img', { name: 'Project workflow diagram' });
+  await expect(image).toBeVisible();
+  const imageBlock = image.locator('..');
+  await expect(imageBlock).toHaveAttribute('data-astro-wysiwyg', /.+/);
+  await image.click();
+  await expect(imageBlock).toHaveAttribute('contenteditable', 'true');
+  page.once('dialog', (confirmation) => confirmation.accept());
+  await editor.getByRole('button', { name: 'Delete block' }).click();
+  await expect(image).toHaveCount(0);
+  await expect.poll(async () => readFile(imagesFile, 'utf8'))
+    .not.toContain('![Project workflow diagram](/assets/workflow.png)');
+  await expect.poll(async () => readFile(uploadedImageFile).then(() => true)).toBe(true);
+});
+
+test('previews, cancels, rejects, and applies in-place image replacements', async ({ page }) => {
+  const originalSource = await readFile(imagesFile, 'utf8');
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/images');
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  let image = page.getByRole('img', { name: 'Original replaceable example' });
+  await image.click();
+  const replace = editor.getByRole('button', { name: 'Replace image', exact: true });
+  await expect(replace).toBeVisible();
+  await replace.click();
+  let dialog = editor.getByRole('dialog', { name: 'Replace image' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Alt text')).toHaveValue('Original replaceable example');
+  await expect(dialog.getByRole('img', { name: 'Replacement preview' })).toBeVisible();
+  await dialog.getByLabel('Existing project asset').check();
+  await expect(dialog.getByLabel('Project asset reference')).toBeFocused();
+  await dialog.getByLabel('Upload new image').check();
+  await expect(dialog.getByLabel('Image file', { exact: true })).toBeFocused();
+  await dialog.getByLabel('Existing project asset').check();
+  await dialog.getByLabel('Project asset reference').fill('/assets/replace-alternate.png');
+  await expect(dialog.getByRole('button', { name: 'Replace image' })).toBeEnabled();
+  const preview = dialog.getByRole('img', { name: 'Replacement preview' });
+  await expect(preview).toHaveAttribute('src', /assets\/preview\?.*replace-alternate\.png/);
+  await expect.poll(() => preview.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await dialog.getByLabel('Alt text').fill('Cancelled replacement');
+  await dialog.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  await expect(replace).toBeFocused();
+  expect(await readFile(imagesFile, 'utf8')).toBe(originalSource);
+
+  await replace.click();
+  dialog = editor.getByRole('dialog', { name: 'Replace image' });
+  await dialog.getByLabel('Existing project asset').check();
+  await dialog.getByLabel('Project asset reference').fill('/assets/missing.png');
+  await dialog.getByLabel('Alt text').fill('Rejected replacement');
+  await dialog.getByRole('button', { name: 'Replace image' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The selected project image does not exist.');
+  expect(await readFile(imagesFile, 'utf8')).toBe(originalSource);
+
+  await dialog.getByLabel('Project asset reference').fill('/assets/replace-alternate.png');
+  await dialog.getByLabel('Alt text').fill('Alternate replaceable example');
+  await dialog.getByRole('button', { name: 'Replace image' }).click();
+  await expect(dialog).not.toBeVisible();
+  image = page.getByRole('img', { name: 'Alternate replaceable example' });
+  await expect(image).toBeVisible();
+  await expect(image.locator('..')).toHaveAttribute('href', '/images');
+  await expect(image.locator('xpath=../..')).toContainText('This linked caption stays in place.');
+  await expect.poll(async () => readFile(imagesFile, 'utf8')).toContain(
+    '[![Alternate replaceable example](/assets/replace-alternate.png "Replaceable demo image")](/images) This linked caption stays in place.',
+  );
+
+  await image.click();
+  await replace.click();
+  dialog = editor.getByRole('dialog', { name: 'Replace image' });
+  await dialog.getByLabel('Image file', { exact: true }).setInputFiles({
+    name: 'Uploaded replacement.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  });
+  await dialog.getByLabel('Destination name').fill('uploaded-replacement.png');
+  await dialog.getByLabel('Alt text').fill('Uploaded replaceable example');
+  await dialog.getByRole('button', { name: 'Upload image' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/uploaded-replacement.png');
+  const sourceBeforeConflict = await readFile(imagesFile, 'utf8');
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'The source changed before image replacement.' }),
+    });
+  });
+  await dialog.getByRole('button', { name: 'Replace image' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The source changed before image replacement.');
+  await expect(dialog).toBeVisible();
+  expect(await readFile(imagesFile, 'utf8')).toBe(sourceBeforeConflict);
+  await expect.poll(async () => readFile(uploadedReplacementFile).then(() => true)).toBe(true);
+  await page.unroute('**/_astro-wysiwyg/save');
+  await dialog.getByRole('button', { name: 'Replace image' }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('img', { name: 'Uploaded replaceable example' })).toBeVisible();
+  await expect.poll(async () => readFile(imagesFile, 'utf8')).toContain(
+    '[![Uploaded replaceable example](/assets/uploaded-replacement.png "Replaceable demo image")](/images) This linked caption stays in place.',
+  );
+  await expect.poll(async () => readFile('.tmp/e2e-site/public/assets/replace-original.png').then(() => true))
+    .toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole('img', { name: 'Uploaded replaceable example' })).toBeVisible();
+  await expect(page.getByText('This linked caption stays in place.')).toBeVisible();
+
+  const sourceImage = page.getByRole('img', { name: 'Original source asset example' });
+  await sourceImage.click();
+  await editor.getByRole('button', { name: 'Replace image', exact: true }).click();
+  dialog = editor.getByRole('dialog', { name: 'Replace image' });
+  await dialog.getByLabel('Existing project asset').check();
+  await dialog.getByLabel('Project asset reference').fill('../assets/replace-source-alternate.png');
+  await dialog.getByLabel('Alt text').fill('Alternate source asset example');
+  await dialog.getByRole('button', { name: 'Replace image' }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('img', { name: 'Alternate source asset example' })).toBeVisible();
+  await expect.poll(async () => readFile(imagesFile, 'utf8')).toContain(
+    '![Alternate source asset example](../assets/replace-source-alternate.png)',
+  );
+  await page.reload();
+  await expect(page.getByRole('img', { name: 'Alternate source asset example' })).toBeVisible();
+
+  await page.goto('/image-astro');
+  for (const name of ['Astro imported image example', 'Astro public image example']) {
+    const imageTarget = page.getByRole('img', { name });
+    const target = imageTarget.locator('xpath=ancestor::p[1]');
+    await imageTarget.click();
+    await expect(target).toHaveAttribute('data-astro-wysiwyg', /.+/);
+    await expect(editor.getByRole('button', { name: 'Replace image', exact: true })).toBeVisible();
+  }
+  await page.goto('/image-mdx');
+  await expect(page.getByRole('img', { name: 'MDX replaceable image example' }).locator('xpath=ancestor::p[1]'))
+    .toHaveAttribute('data-astro-wysiwyg', /.+/);
+  await writeFile(imagesFile, originalSource);
+  await page.waitForTimeout(250);
+});
+
+test('uploads and inserts an accessible native video with selected playback options', async ({ page }) => {
+  const originalSource = await readFile(videosFile, 'utf8');
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/videos');
+  const target = page.getByText('Select this paragraph, then use', { exact: false });
+  await target.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await editor.getByRole('button', { name: 'Insert', exact: true }).click();
+  await editor.getByRole('menuitem', { name: 'Video' }).click();
+  const dialog = editor.getByRole('dialog', { name: 'Insert video' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'Product Walkthrough.MP4',
+    mimeType: 'video/mp4',
+    buffer: await readFile('demo/public/assets/astro-wysiwyg-demo.mp4'),
+  });
+  await expect(dialog.getByLabel('Destination name')).toHaveValue('product-walkthrough.mp4');
+  await dialog.getByLabel('Destination name').fill('walkthrough.mp4');
+  await dialog.getByLabel('Accessible label').fill('Product walkthrough video');
+  await dialog.getByLabel('Visible description').fill('A silent tour of the project dashboard.');
+  await dialog.getByLabel('Poster image path (optional)').fill('/assets/astro-wysiwyg-video-poster.png');
+  await dialog.getByLabel('Preload').selectOption('auto');
+  await dialog.getByLabel('Controls', { exact: true }).uncheck();
+  await expect.poll(() => dialog.getByLabel('Controls', { exact: true }).evaluate((input) => (
+    (input as HTMLInputElement).validationMessage
+  ))).toBe('Native video controls are required.');
+  await dialog.getByLabel('Controls', { exact: true }).check();
+  await dialog.getByLabel('Autoplay').check();
+  await expect.poll(() => dialog.getByLabel('Autoplay').evaluate((input) => (
+    (input as HTMLInputElement).validationMessage
+  ))).toBe('Autoplay requires muted playback.');
+  await dialog.getByLabel('Muted').check();
+  await dialog.getByLabel('Loop').check();
+  await expect(dialog.locator('[data-video-preview]')).toBeVisible();
+  await expect.poll(() => dialog.locator('[data-video-preview]').evaluate((video) => (
+    (video as HTMLVideoElement).videoWidth
+  ))).toBeGreaterThan(0);
+
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/walkthrough.mp4');
+  await expect(dialog.getByLabel('Video file', { exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel('Destination name')).toBeDisabled();
+  await expect.poll(async () => readFile(uploadedVideoFile).then((value) => value.length)).toBeGreaterThan(0);
+
+  await dialog.getByRole('button', { name: 'Insert video' }).click();
+  await expect(dialog).not.toBeVisible();
+  const video = page.locator('video[aria-label="Product walkthrough video"]');
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute('controls', '');
+  await expect(video).toHaveAttribute('preload', 'auto');
+  await expect(video).toHaveAttribute('poster', '/assets/astro-wysiwyg-video-poster.png');
+  await expect(video).toHaveAttribute('muted', '');
+  await expect(video).toHaveAttribute('loop', '');
+  await expect(video).toHaveAttribute('autoplay', '');
+  await expect(video.locator('source')).toHaveAttribute('src', '/assets/walkthrough.mp4');
+  await expect(video.locator('xpath=..').getByText('A silent tour of the project dashboard.')).toBeVisible();
+  await expect.poll(async () => readFile(videosFile, 'utf8')).toContain(
+    '<video controls preload="auto" aria-label="Product walkthrough video" poster="/assets/astro-wysiwyg-video-poster.png" muted loop autoplay playsinline>',
+  );
+
+  await page.reload();
+  await expect(page.locator('video[aria-label="Product walkthrough video"]')).toBeVisible();
+  await writeFile(videosFile, originalSource);
+});
+
+test('cancels invalid video uploads and keeps an uploaded video after insertion failure', async ({ page }) => {
+  const source = await readFile(videosFile, 'utf8');
+  await page.goto('/videos');
+  const target = page.getByText('Select this paragraph, then use', { exact: false });
+  await target.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const openDialog = async () => {
+    await editor.getByRole('button', { name: 'Insert', exact: true }).click();
+    await editor.getByRole('menuitem', { name: 'Video' }).click();
+    return editor.getByRole('dialog', { name: 'Insert video' });
+  };
+
+  let dialog = await openDialog();
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await dialog.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  dialog = await openDialog();
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'cancelled.mp4', mimeType: 'video/mp4', buffer: Buffer.from('cancelled'),
+  });
+  await dialog.getByLabel('Accessible label').fill('Cancelled video');
+  await dialog.getByLabel('Visible description').fill('This video should not be uploaded.');
+  await dialog.evaluate((element) => element.dispatchEvent(new Event('cancel', { cancelable: true })));
+  await expect(dialog).not.toBeVisible();
+  await expect(editor.getByRole('button', { name: 'Insert', exact: true })).toBeFocused();
+  await assertFileMissing('.tmp/e2e-site/public/assets/cancelled.mp4');
+
+  dialog = await openDialog();
+  await page.getByText('The editor requires native controls', { exact: false })
+    .evaluate((element) => (element as HTMLElement).click());
+  await expect(dialog).not.toBeVisible();
+  await target.click();
+  dialog = await openDialog();
+  await editor.getByRole('button', { name: 'Done' }).evaluate((element) => (element as HTMLElement).click());
+  await expect(dialog).not.toBeVisible();
+  await target.click();
+
+  dialog = await openDialog();
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'invalid.mp4', mimeType: 'video/mp4', buffer: Buffer.from('<video>not mp4</video>'),
+  });
+  await dialog.getByLabel('Accessible label').fill('Invalid video');
+  await dialog.getByLabel('Visible description').fill('This invalid file must be rejected.');
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The file is not a valid MP4 container.');
+  await assertFileMissing('.tmp/e2e-site/public/assets/invalid.mp4');
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles([]);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  dialog = await openDialog();
+  await page.evaluate(() => {
+    (window as typeof window & { originalCreateObjectURL?: typeof URL.createObjectURL }).originalCreateObjectURL = URL.createObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: undefined });
+  });
+  await dialog.getByLabel('Video file', { exact: true }).evaluate((input, bytes) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array(bytes)], 'fallback-type.mp4', { type: '' }));
+    (input as HTMLInputElement).files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, [...await readFile('demo/public/assets/astro-wysiwyg-demo.mp4')]);
+  await dialog.getByLabel('Accessible label').fill('Fallback type video');
+  await dialog.getByLabel('Visible description').fill('This upload uses the browser content type fallback.');
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Choose an H.264 MP4 video.');
+  await page.evaluate(() => {
+    const scope = window as typeof window & { originalCreateObjectURL?: typeof URL.createObjectURL };
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: scope.originalCreateObjectURL });
+    delete scope.originalCreateObjectURL;
+  });
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  dialog = await openDialog();
+  await page.route('**/_astro-wysiwyg/save/videos', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'recoverable-video.mp4',
+    mimeType: 'video/mp4',
+    buffer: await readFile('demo/public/assets/astro-wysiwyg-demo.mp4'),
+  });
+  await dialog.getByLabel('Accessible label').fill('Recoverable video');
+  await dialog.getByLabel('Visible description').fill('This upload remains available after insertion fails.');
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The video could not be uploaded.');
+  await page.unroute('**/_astro-wysiwyg/save/videos');
+  await dialog.getByLabel('Accessible label').fill('Recoverable video');
+  await dialog.getByLabel('Visible description').fill('This upload remains available after insertion fails.');
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/recoverable-video.mp4');
+  await dialog.getByLabel('Accessible label').fill('');
+  await dialog.getByRole('button', { name: 'Insert video' }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Accessible label').fill('Recoverable video');
+  const marker = await target.getAttribute('data-astro-wysiwyg');
+  await target.evaluate((element) => element.removeAttribute('data-astro-wysiwyg'));
+  await dialog.getByRole('button', { name: 'Insert video' }).click();
+  await expect(editor.getByRole('status')).toHaveText('Frontmatter fields cannot be added or deleted.');
+  await target.evaluate((element, value) => element.setAttribute('data-astro-wysiwyg', value!), marker);
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+  await dialog.getByRole('button', { name: 'Insert video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The video could not be inserted.');
+  await page.unroute('**/_astro-wysiwyg/save');
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'The source changed before video insertion.' }),
+    });
+  });
+  const insert = dialog.getByRole('button', { name: 'Insert video' });
+  await insert.click();
+  await expect(dialog.getByRole('alert')).toHaveText('The source changed before video insertion.');
+  await expect(dialog).toBeVisible();
+  await expect.poll(async () => readFile('.tmp/e2e-site/public/assets/recoverable-video.mp4').then(() => true))
+    .toBe(true);
+  expect(await readFile(videosFile, 'utf8')).toBe(source);
+  await page.unroute('**/_astro-wysiwyg/save');
+
+  let releaseInsertion!: () => void;
+  let markInsertionStarted!: () => void;
+  const insertionGate = new Promise<void>((resolve) => { releaseInsertion = resolve; });
+  const insertionStarted = new Promise<void>((resolve) => { markInsertionStarted = resolve; });
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    markInsertionStarted();
+    await insertionGate;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ marker: 'detached-video-marker' }),
+    });
+  });
+  await dialog.getByRole('button', { name: 'Insert video' }).click();
+  await insertionStarted;
+  await target.evaluate((element) => element.remove());
+  releaseInsertion();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('video[aria-label="Recoverable video"]')).toHaveCount(0);
+  await page.unroute('**/_astro-wysiwyg/save');
+});
+
+test('replaces an MDX video and poster with an existing validated project asset', async ({ page }) => {
+  const originalSource = await readFile(videoMdxFile, 'utf8');
+  await page.goto('/video-mdx');
+  const figure = page.locator('figure[data-astro-wysiwyg-video]');
+  await figure.locator('video').click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const replace = editor.getByRole('button', { name: 'Replace video', exact: true });
+  await expect(replace).toBeVisible();
+  await expect(editor.getByRole('button', { name: 'Bold' })).toBeDisabled();
+  await figure.press('Control+b');
+  await figure.press('Alt+2');
+  await figure.press('a');
+  await figure.press('Alt+F10');
+  await expect(editor.getByRole('button', { name: 'Insert', exact: true })).toBeFocused();
+  await replace.click();
+  const dialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await expect(dialog.getByLabel('Accessible label')).toHaveValue('MDX replaceable video example');
+  await expect(dialog.getByLabel('Visible description')).toHaveValue(
+    'This MDX description and the native fallback stay intact unless an author edits the description.',
+  );
+  await expect(dialog.getByLabel('Poster image path (optional)')).toHaveValue(
+    '/assets/astro-wysiwyg-video-poster.png',
+  );
+  await expect(dialog.getByLabel('Preload')).toHaveValue('none');
+  await expect(dialog.getByLabel('Muted')).toBeChecked();
+  await dialog.getByLabel('Existing public video').check();
+  await dialog.getByLabel('Public video path').fill('/assets/astro-wysiwyg-demo-alternate.mp4');
+  await expect(dialog.getByRole('button', { name: 'Replace video' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Preview existing video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Using existing video /assets/astro-wysiwyg-demo-alternate.mp4.',
+  );
+  await expect(dialog.locator('[data-video-preview]')).toHaveAttribute(
+    'src', '/assets/astro-wysiwyg-demo-alternate.mp4',
+  );
+  await dialog.getByLabel('Accessible label').fill('Updated MDX project tour');
+  await dialog.getByLabel('Visible description').fill('Updated native MDX video description.');
+  await dialog.getByLabel('Poster image path (optional)').fill('https://example.com/remote.png');
+  await expect(dialog.locator('[data-video-preview]')).not.toHaveAttribute('poster');
+  await dialog.getByLabel('Poster image path (optional)').fill(
+    '/assets/astro-wysiwyg-video-poster-alternate.png',
+  );
+  await dialog.getByLabel('Preload').selectOption('auto');
+  await dialog.getByLabel('Loop').check();
+  await dialog.getByLabel('Autoplay').check();
+  await dialog.getByRole('button', { name: 'Replace video' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  const video = figure.locator('video');
+  await expect(video).toHaveAttribute('aria-label', 'Updated MDX project tour');
+  await expect(video).toHaveAttribute('poster', '/assets/astro-wysiwyg-video-poster-alternate.png');
+  await expect(video).toHaveAttribute('preload', 'auto');
+  await expect(video).toHaveAttribute('muted', '');
+  await expect(video).toHaveAttribute('loop', '');
+  await expect(video).toHaveAttribute('autoplay', '');
+  await expect(video.locator('source')).toHaveAttribute('src', '/assets/astro-wysiwyg-demo-alternate.mp4');
+  await expect(video.locator('track')).toHaveAttribute('src', '/assets/astro-wysiwyg-demo.vtt');
+  await expect(video.getByText('Download the MDX video example')).toHaveAttribute(
+    'href', '/assets/astro-wysiwyg-demo-alternate.mp4',
+  );
+  await expect(figure.getByText('Updated native MDX video description.')).toBeVisible();
+  await expect.poll(async () => readFile(videoMdxFile, 'utf8')).toContain(
+    '<source src="/assets/astro-wysiwyg-demo-alternate.mp4" type="video/mp4" />',
+  );
+  const saved = await readFile(videoMdxFile, 'utf8');
+  expect(saved).toContain('<track kind="captions" src="/assets/astro-wysiwyg-demo.vtt"');
+  expect(saved).toContain('download>Download the MDX video example</a>');
+  expect(saved).toContain('<a href="/video-mdx">Read the video notes</a>');
+
+  await replace.click();
+  const removePosterDialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await removePosterDialog.getByLabel('Poster image path (optional)').fill('');
+  await removePosterDialog.getByRole('button', { name: 'Replace video' }).click();
+  await expect(removePosterDialog).not.toBeVisible();
+  await expect(video).not.toHaveAttribute('poster');
+
+  await page.reload();
+  const reloadedVideo = page.locator('figure[data-astro-wysiwyg-video] video');
+  await reloadedVideo.click();
+  await expect(editor.getByRole('button', { name: 'Replace video', exact: true })).toBeVisible();
+  await editor.getByRole('button', { name: 'Replace video', exact: true }).click();
+  const noPosterDialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await expect(noPosterDialog.getByLabel('Poster image path (optional)')).toHaveValue('');
+  await noPosterDialog.getByRole('button', { name: 'Cancel' }).click();
+  await page.locator('figure[data-astro-wysiwyg-video]').press('Escape');
+  await expect(editor.getByRole('toolbar')).toBeHidden();
+  await writeFile(videoMdxFile, originalSource);
+});
+
+test('cancels and recovers Astro video replacements without deleting assets', async ({ page }) => {
+  const source = await readFile(videoAstroFile, 'utf8');
+  await page.goto('/video-astro');
+  const figure = page.locator('figure.video-example');
+  await figure.locator('video').click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const replace = editor.getByRole('button', { name: 'Replace video', exact: true });
+  await expect(replace).toBeVisible();
+
+  await replace.click();
+  let dialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'cancelled-replacement.mp4',
+    mimeType: 'video/mp4',
+    buffer: await readFile('demo/public/assets/astro-wysiwyg-demo.mp4'),
+  });
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(replace).toBeFocused();
+  await assertFileMissing('.tmp/e2e-site/public/assets/cancelled-replacement.mp4');
+  expect(await readFile(videoAstroFile, 'utf8')).toBe(source);
+
+  await replace.click();
+  dialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await dialog.getByLabel('Existing public video').check();
+  await dialog.getByLabel('Public video path').fill('');
+  await dialog.getByRole('button', { name: 'Preview existing video' }).click();
+  await page.route('**/_astro-wysiwyg/save/videos/preview?*', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+  await dialog.getByLabel('Public video path').fill('/assets/astro-wysiwyg-demo.mp4');
+  await dialog.getByRole('button', { name: 'Preview existing video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The video could not be previewed.');
+  await page.unroute('**/_astro-wysiwyg/save/videos/preview?*');
+  await dialog.getByLabel('Public video path').fill('/assets/missing-video.mp4');
+  await dialog.getByRole('button', { name: 'Preview existing video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The selected project video does not exist.');
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Upload new video').check();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  expect(await readFile(videoAstroFile, 'utf8')).toBe(source);
+
+  await replace.click();
+  dialog = editor.getByRole('dialog', { name: 'Replace video' });
+  await dialog.getByLabel('Video file', { exact: true }).setInputFiles({
+    name: 'replacement-upload.mp4',
+    mimeType: 'video/mp4',
+    buffer: await readFile('demo/public/assets/astro-wysiwyg-demo.mp4'),
+  });
+  await dialog.getByLabel('Destination name').fill('replacement-upload.mp4');
+  await dialog.getByRole('button', { name: 'Upload video' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/replacement-upload.mp4');
+  await expect.poll(async () => readFile(replacementVideoFile).then(() => true)).toBe(true);
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+  });
+  await dialog.getByRole('button', { name: 'Replace video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The video could not be replaced.');
+  await page.unroute('**/_astro-wysiwyg/save');
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'The source changed before video replacement.' }),
+    });
+  });
+  await dialog.getByRole('button', { name: 'Replace video' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The source changed before video replacement.');
+  await expect(dialog).toBeVisible();
+  expect(await readFile(videoAstroFile, 'utf8')).toBe(source);
+  await expect.poll(async () => readFile(replacementVideoFile).then(() => true)).toBe(true);
+  await expect.poll(async () => readFile('.tmp/e2e-site/public/assets/astro-wysiwyg-demo.mp4').then(() => true)).toBe(true);
+  await expect.poll(async () => readFile('.tmp/e2e-site/public/assets/astro-wysiwyg-video-poster.png').then(() => true)).toBe(true);
+  await page.unroute('**/_astro-wysiwyg/save');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('cancels image insertion and reports a disguised upload without changing files', async ({ page }) => {
+  const source = await readFile(imagesFile, 'utf8');
+  await page.goto('/images');
+  const target = page.getByText('Select this paragraph, then use', { exact: false });
+  await target.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const openDialog = async () => {
+    await editor.getByRole('button', { name: 'Insert', exact: true }).click();
+    await editor.getByRole('menuitem', { name: 'Image' }).click();
+    return editor.getByRole('dialog', { name: 'Insert image' });
+  };
+
+  let dialog = await openDialog();
+  await dialog.getByLabel('Image file', { exact: true }).setInputFiles({
+    name: 'cancelled.png', mimeType: 'image/png', buffer: Buffer.from('not uploaded'),
+  });
+  await dialog.getByLabel('Alt text').fill('Cancelled image');
+  await dialog.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  await expect(editor.getByRole('button', { name: 'Insert', exact: true })).toBeFocused();
+  await assertFileMissing('.tmp/e2e-site/public/assets/cancelled.png');
+
+  dialog = await openDialog();
+  await dialog.evaluate((element) => element.dispatchEvent(new Event('cancel', { cancelable: true })));
+  await expect(dialog).not.toBeVisible();
+  await expect(editor.getByRole('button', { name: 'Insert', exact: true })).toBeFocused();
+
+  dialog = await openDialog();
+  await editor.getByRole('button', { name: 'Done' }).evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(dialog).not.toBeVisible();
+  await target.click();
+
+  dialog = await openDialog();
+  await page.getByText('A successful insertion stays source-backed', { exact: false })
+    .evaluate((element) => (element as HTMLElement).click());
+  await expect(dialog).not.toBeVisible();
+
+  dialog = await openDialog();
+  await dialog.getByLabel('Image file', { exact: true }).evaluate((input) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['untyped'], 'untyped.png', { type: '' }));
+    (input as HTMLInputElement).files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await dialog.getByLabel('Alt text').fill('Untyped image');
+  await dialog.getByRole('button', { name: 'Upload image' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Choose a supported PNG, JPEG, GIF, or WebP image.');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  dialog = await openDialog();
+  await dialog.getByLabel('Image file', { exact: true }).setInputFiles({
+    name: 'disguised.png', mimeType: 'image/png', buffer: Buffer.from('<svg><script>alert(1)</script></svg>'),
+  });
+  await dialog.getByLabel('Alt text').fill('Disguised image');
+  await dialog.getByRole('button', { name: 'Upload image' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('The file contents do not match the selected image type.');
+  await expect(dialog).toBeVisible();
+  await assertFileMissing('.tmp/e2e-site/public/assets/disguised.png');
+  expect(await readFile(imagesFile, 'utf8')).toBe(source);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  dialog = await openDialog();
+  await dialog.getByLabel('Image file', { exact: true }).setInputFiles({
+    name: 'recoverable.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  });
+  await dialog.getByLabel('Alt text').fill('Recoverable image');
+  await dialog.getByRole('button', { name: 'Upload image' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/recoverable.png');
+  let releaseInsertion!: () => void;
+  const insertionGate = new Promise<void>((resolve) => { releaseInsertion = resolve; });
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    await insertionGate;
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'The source changed before image insertion.' }),
+    });
+  });
+  const insertImage = dialog.getByRole('button', { name: 'Insert image' });
+  await insertImage.click();
+  await expect(insertImage).toBeDisabled();
+  await expect(insertImage).toHaveAttribute('aria-busy', 'true');
+  releaseInsertion();
+  await expect(dialog.getByRole('alert')).toHaveText('The source changed before image insertion.');
+  await expect(insertImage).toBeEnabled();
+  await expect(insertImage).toHaveAttribute('aria-busy', 'false');
+  await expect(dialog).toBeVisible();
+  expect(await readFile(imagesFile, 'utf8')).toBe(source);
+  await expect.poll(async () => readFile('.tmp/e2e-site/public/assets/recoverable.png').then(() => true)).toBe(true);
+  await page.unroute('**/_astro-wysiwyg/save');
+  await page.locator('[data-astro-wysiwyg-active]').evaluate((element) => {
+    element.removeAttribute('data-astro-wysiwyg');
+  });
+  await dialog.getByRole('button', { name: 'Insert image' }).click();
+  await expect(editor.getByRole('status')).toHaveText('Frontmatter fields cannot be added or deleted.');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+});
+
+async function assertFileMissing(file: string): Promise<void> {
+  await expect.poll(async () => readFile(file).then(() => false).catch(() => true)).toBe(true);
+}
+
 test('queues continued Markdown edits behind an in-flight save', async ({ page }) => {
   let saveRequests = 0;
   await page.route('**/_astro-wysiwyg/save', async (route) => {
@@ -271,7 +1243,7 @@ test('queues continued Markdown edits behind an in-flight save', async ({ page }
     if (saveRequests === 1) await new Promise((resolve) => setTimeout(resolve, 1_000));
     await route.continue();
   });
-  await page.goto('/queue');
+  await page.goto('/resilience/queue');
   const paragraph = page.locator('main > p');
   await expect(paragraph).toHaveAttribute('data-astro-wysiwyg', /.+/);
   await paragraph.click();
@@ -301,7 +1273,7 @@ test('coalesces queued snapshots to the latest edit while a save is in flight', 
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/queue');
+  await page.goto('/resilience/queue');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   let releaseResponse: () => void = () => undefined;
@@ -333,6 +1305,7 @@ test('coalesces queued snapshots to the latest edit while a save is in flight', 
 
   await changeTo('First snapshot');
   await started;
+  await expect(save).toHaveAttribute('aria-busy', 'true');
   await changeTo('Second snapshot');
   await changeTo('Third snapshot');
   await changeTo('Latest snapshot');
@@ -340,6 +1313,7 @@ test('coalesces queued snapshots to the latest edit while a save is in flight', 
   await page.waitForTimeout(300);
 
   expect(requests.map(({ html }) => html)).toEqual(['First snapshot', 'Latest snapshot']);
+  await expect(save).toHaveAttribute('aria-busy', 'false');
   await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('status')).toHaveText('Saved');
   const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('astro-wysiwyg-active') ?? '{}'));
   expect(session.saving).toBe(false);
@@ -352,7 +1326,7 @@ test('handles invalid, missing, and tag-changing active sessions', async ({ page
       sessionStorage.setItem('astro-wysiwyg-active', '{invalid');
     }
   });
-  await page.goto('/session');
+  await page.goto('/resilience/session');
   await expect(page.locator('main > p')).not.toHaveAttribute('contenteditable', 'true');
   await page.evaluate(() => {
     const paragraph = document.querySelector('main > p');
@@ -440,7 +1414,7 @@ test('restores sessions with invalid source locations and oversized carets', asy
 });
 
 test('does not repeat an in-flight save already reflected after reload', async ({ page }) => {
-  await page.goto('/pending');
+  await page.goto('/resilience/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   let saveRequests = 0;
@@ -465,7 +1439,7 @@ test('does not repeat an in-flight save already reflected after reload', async (
 });
 
 test('retries an in-flight save when its original source is unchanged after reload', async ({ page }) => {
-  await page.goto('/pending');
+  await page.goto('/resilience/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   const token = await paragraph.getAttribute('data-astro-wysiwyg');
@@ -499,7 +1473,7 @@ test('preserves a debounce-window draft when source changed before reload', asyn
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/pending');
+  await page.goto('/resilience/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   await paragraph.press('End');
@@ -547,7 +1521,7 @@ test('preserves a debounce-window draft when source changed before reload', asyn
 });
 
 test('does not replay stale HTML from a clean session when source changed', async ({ page }) => {
-  await page.goto('/pending');
+  await page.goto('/resilience/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   const cleanSession = await page.evaluate(() => (
@@ -576,7 +1550,7 @@ test('does not replay stale HTML from a clean session when source changed', asyn
 });
 
 test('preserves an in-flight draft without overwriting conflicting source after reload', async ({ page }) => {
-  await page.goto('/pending');
+  await page.goto('/resilience/pending');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   let saveRequests = 0;
@@ -601,7 +1575,7 @@ test('preserves an in-flight draft without overwriting conflicting source after 
 });
 
 test('keeps editing active when Done cannot save', async ({ page }) => {
-  await page.goto('/save-failure');
+  await page.goto('/resilience/save-failure');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   await page.route('**/_astro-wysiwyg/save', async (route) => {
@@ -626,7 +1600,7 @@ test('times out a stalled save without blocking the next attempt', async ({ page
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/save-failure');
+  await page.goto('/resilience/save-failure');
   await page.clock.install();
   const paragraph = page.locator('main > p');
   await paragraph.click();
@@ -682,7 +1656,7 @@ test('switches blocks after saving the pending manual edit', async ({ page }) =>
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/guards');
+  await page.goto('/resilience/guards');
   const paragraphs = page.locator('main > p');
   const first = paragraphs.first();
   const second = paragraphs.nth(1);
@@ -713,7 +1687,7 @@ test('keeps the previous block recoverable when switching blocks cannot save', a
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/guards');
+  await page.goto('/resilience/guards');
   const paragraphs = page.locator('main > p');
   const first = paragraphs.first();
   const second = paragraphs.nth(1);
@@ -746,7 +1720,7 @@ test('keeps editing active when content changes while Done is saving', async ({ 
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/save-failure');
+  await page.goto('/resilience/save-failure');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   await paragraph.evaluate((element) => {
@@ -787,7 +1761,7 @@ test('keeps unsaved editing active when its source marker disappears', async ({ 
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/save-failure');
+  await page.goto('/resilience/save-failure');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   await paragraph.evaluate((element) => {
@@ -944,11 +1918,136 @@ test('supports keyboard activation, formatting, lists, toolbar focus, save, and 
   await page.locator('main > ol').press('Control+Shift+7');
   const restored = page.locator('main > p');
   await restored.press('Alt+F10');
-  await expect(page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Undo' })).toBeFocused();
+  const firstEnabledControl = page.locator('#astro-wysiwyg-toolbar').locator('[data-toolbar-item]:not(:disabled)').first();
+  await expect(firstEnabledControl).toBeFocused();
   await restored.focus();
   await restored.press('Control+s');
-  await restored.press('Escape');
+  await restored.press('End');
+  await restored.pressSequentially(' save on done');
+  await page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Done' }).click();
   await expect(restored).not.toHaveAttribute('contenteditable', 'true');
+});
+
+test('supports roving toolbar focus, named menus, tooltips, states, and focus restoration', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/keyboard');
+  const paragraph = page.locator('main > p');
+  await paragraph.click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  const toolbar = editor.getByRole('toolbar', { name: 'Edit text' });
+  const controls = toolbar.locator('[data-toolbar-item]:not([hidden])');
+  await expect(controls).toHaveCount(12);
+  await expect(toolbar.locator('[data-toolbar-item][tabindex="0"]')).toHaveCount(1);
+
+  await paragraph.press('Alt+F10');
+  const style = toolbar.getByRole('button', { name: 'Text style: Paragraph' });
+  await expect(style).toBeFocused();
+  await style.press('ArrowRight');
+  const bold = toolbar.getByRole('button', { name: 'Bold' });
+  await expect(bold).toBeFocused();
+  await expect(toolbar.getByRole('tooltip')).toHaveText('Bold (Ctrl/Cmd+B)');
+  await bold.press('ArrowLeft');
+  await expect(style).toBeFocused();
+  await style.press('ArrowRight');
+  await expect(bold).toBeFocused();
+  await bold.press('Escape');
+  await expect(toolbar.getByRole('tooltip')).not.toBeVisible();
+  await expect(bold).toBeFocused();
+  await bold.press('End');
+  const done = toolbar.getByRole('button', { name: 'Done' });
+  await expect(done).toBeFocused();
+  await done.press('ArrowRight');
+  await expect(style).toBeFocused();
+  await style.press('End');
+  await paragraph.focus();
+  await paragraph.press('Alt+F10');
+  await expect(done).toBeFocused();
+  await done.press('Home');
+  await expect(style).toBeFocused();
+
+  await style.press('Enter');
+  const styleMenu = toolbar.getByRole('menu', { name: 'Text style' });
+  await expect(styleMenu).toBeVisible();
+  await expect(styleMenu.getByRole('menuitem', { name: 'Paragraph' })).toBeFocused();
+  await page.keyboard.press('ArrowUp');
+  await expect(styleMenu.getByRole('menuitem', { name: /Heading 6/ })).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(styleMenu.getByRole('menuitem', { name: 'Paragraph' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(styleMenu.getByRole('menuitem', { name: /Heading 1/ })).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(styleMenu.getByRole('menuitem', { name: /Heading 6/ })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(styleMenu).not.toBeVisible();
+  await expect(style).toBeFocused();
+  await style.press('ArrowUp');
+  await expect(styleMenu.getByRole('menuitem', { name: /Heading 6/ })).toBeFocused();
+  await style.evaluate((button) => button.click());
+  await expect(styleMenu).not.toBeVisible();
+  await expect(style).toBeFocused();
+
+  const insert = toolbar.getByRole('button', { name: 'Insert' });
+  await insert.focus();
+  await insert.press('Space');
+  const insertMenu = toolbar.getByRole('menu', { name: 'Insert' });
+  await expect(insertMenu.getByRole('menuitem', { name: 'Paragraph below' })).toBeFocused();
+  await expect(insertMenu.getByRole('menuitem', { name: 'Image' })).toBeEnabled();
+  await expect(insertMenu.getByRole('menuitem', { name: 'Video' })).toBeEnabled();
+  await page.keyboard.press('ArrowDown');
+  await expect(insertMenu.getByRole('menuitem', { name: 'Heading' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(insert).toBeFocused();
+  await insert.press('ArrowDown');
+  await expect(insertMenu.getByRole('menuitem', { name: 'Paragraph below' })).toBeFocused();
+  await style.evaluate((button) => button.click());
+  await expect(insertMenu).not.toBeVisible();
+  await expect(styleMenu).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await paragraph.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  const link = toolbar.getByRole('button', { name: 'Link' });
+  await link.click();
+  const linkDialog = toolbar.getByRole('dialog', { name: 'Edit link' });
+  await expect(linkDialog.getByRole('textbox', { name: 'Link URL' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(linkDialog).not.toBeVisible();
+  await expect(link).toBeFocused();
+  await paragraph.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await link.click();
+  await expect(linkDialog).toBeVisible();
+  await style.evaluate((button) => button.click());
+  await expect(linkDialog).not.toBeVisible();
+  await expect(styleMenu).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await bold.hover();
+  await expect(toolbar.getByRole('tooltip')).toBeVisible();
+  await toolbar.getByRole('tooltip').hover();
+  await expect(toolbar.getByRole('tooltip')).toBeVisible();
+  await bold.hover();
+  await expect(toolbar.getByRole('tooltip')).toBeVisible();
+  await toolbar.getByRole('tooltip').hover();
+  await page.mouse.move(0, 0);
+  await expect(toolbar.getByRole('tooltip')).not.toBeVisible();
+  await bold.focus();
+  await bold.press('Tab');
+  await expect(bold).not.toBeFocused();
 });
 
 test('ignores non-editor events and storage failures without stopping editing', async ({ page }) => {
@@ -1005,7 +2104,7 @@ test('preserves one editor instance across ClientRouter document swaps', async (
 });
 
 test('handles duplicate setup, page events, open panels, block switches, and disabling while active', async ({ page }) => {
-  await page.goto('/resilience');
+  await page.goto('/resilience/resilience');
   await page.evaluate(async () => {
     const clientUrl = performance.getEntriesByType('resource')
       .map((entry) => entry.name)
@@ -1042,7 +2141,7 @@ test('handles duplicate setup, page events, open panels, block switches, and dis
   const editor = page.locator('#astro-wysiwyg-toolbar');
   await editor.getByRole('button', { name: 'Link' }).click();
   await paragraphs.nth(1).evaluate((element) => element.click());
-  await expect(editor.getByRole('group', { name: 'Edit link' })).not.toBeVisible();
+  await expect(editor.getByRole('dialog', { name: 'Edit link' })).not.toBeVisible();
 
   await page.evaluate(() => {
     document.dispatchEvent(new CustomEvent('astro-wysiwyg:preferences', {
@@ -1067,12 +2166,19 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/guards');
+  await page.goto('/resilience/guards');
   const editor = page.locator('#astro-wysiwyg-toolbar');
   await page.evaluate(() => {
     dispatchEvent(new Event('scroll'));
     const shadow = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot;
     shadow?.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }));
+    shadow?.dispatchEvent(new FocusEvent('focusin'));
+    shadow?.dispatchEvent(new FocusEvent('focusout'));
+    shadow?.dispatchEvent(new Event('pointerover'));
+    shadow?.dispatchEvent(new Event('pointerout'));
+    shadow?.dispatchEvent(new PointerEvent('pointerover'));
+    shadow?.dispatchEvent(new PointerEvent('pointerout'));
+    shadow?.querySelector('[role="status"]')?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
     (shadow?.querySelector('[data-command="bold"]') as HTMLButtonElement)?.click();
   });
   let first = page.locator('main > p').first();
@@ -1093,6 +2199,7 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
     unknown.remove();
   });
   await editor.getByRole('button', { name: 'Paragraph' }).click();
+  await editor.getByRole('menuitem', { name: 'Paragraph' }).click();
   await editor.getByRole('button', { name: 'Bold' }).click();
 
   await first.evaluate((element) => {
@@ -1126,7 +2233,7 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
   });
   await editor.getByRole('button', { name: 'Link' }).click();
   await page.evaluate(() => document.dispatchEvent(new CustomEvent('astro-wysiwyg:open-frontmatter')));
-  await expect(editor.getByRole('group', { name: 'Edit link' })).not.toBeVisible();
+  await expect(editor.getByRole('dialog', { name: 'Edit link' })).not.toBeVisible();
   await page.evaluate(() => {
     const shadow = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot;
     (shadow?.querySelector('[data-action="save"]') as HTMLButtonElement)?.click();
@@ -1171,7 +2278,7 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
 });
 
 test('rejects failed and aborted dynamic source-marker lookups', async ({ page }) => {
-  await page.goto('/guards');
+  await page.goto('/resilience/guards');
   const blocks = page.locator('main > p');
   await blocks.evaluateAll((elements) => {
     for (const [index, element] of elements.entries()) {
@@ -1399,7 +2506,8 @@ test('keeps blocks active when structural requests fail or deletion is cancelled
   await page.route('**/_astro-wysiwyg/save', async (route) => {
     await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Structure failed.' }) });
   });
-  await editor.getByRole('button', { name: 'Add block below' }).click();
+  await editor.getByRole('button', { name: 'Insert' }).click();
+  await editor.getByRole('menuitem', { name: 'Paragraph below' }).click();
   await expect(editor.getByRole('status')).toHaveText('Structure failed.');
   page.once('dialog', (dialog) => dialog.accept());
   await editor.getByRole('button', { name: 'Delete block' }).click();
@@ -1408,7 +2516,8 @@ test('keeps blocks active when structural requests fail or deletion is cancelled
     element.textContent = 'First block.';
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
   });
-  await editor.getByRole('button', { name: 'Add block below' }).click();
+  await editor.getByRole('button', { name: 'Insert' }).click();
+  await editor.getByRole('menuitem', { name: 'Paragraph below' }).click();
   await expect(editor.getByRole('status')).toHaveText('Structure failed.');
   page.once('dialog', (dialog) => dialog.dismiss());
   await editor.getByRole('button', { name: 'Delete block' }).click();
@@ -1420,7 +2529,7 @@ test('keeps blocks active when structural requests fail or deletion is cancelled
 });
 
 test('handles a failed delete after its original DOM detaches', async ({ page }) => {
-  await page.goto('/detached');
+  await page.goto('/resilience/detached');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   let releaseResponse: () => void = () => undefined;
@@ -1446,7 +2555,7 @@ test('handles a failed delete after its original DOM detaches', async ({ page })
 });
 
 test('remembers an inserted block when its original DOM detaches before the response', async ({ page }) => {
-  await page.goto('/detached');
+  await page.goto('/resilience/detached');
   const paragraph = page.locator('main > p');
   await paragraph.click();
   let releaseResponse: () => void = () => undefined;
@@ -1455,7 +2564,7 @@ test('remembers an inserted block when its original DOM detaches before the resp
   const release = new Promise<void>((resolve) => { releaseResponse = resolve; });
   await page.route('**/_astro-wysiwyg/save', async (route) => {
     const request = route.request().postDataJSON();
-    if (request.operation !== 'insert-after') return route.continue();
+    if (request.operation !== 'insert-content-after') return route.continue();
     requestStarted();
     await release;
     const marker = JSON.parse(Buffer.from(request.marker, 'base64url').toString('utf8'));
@@ -1469,7 +2578,9 @@ test('remembers an inserted block when its original DOM detaches before the resp
       body: JSON.stringify({ marker: Buffer.from(JSON.stringify(marker)).toString('base64url') }),
     });
   });
-  const add = page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Add block below' }).click();
+  const editor = page.locator('#astro-wysiwyg-toolbar');
+  await editor.getByRole('button', { name: 'Insert' }).click();
+  const add = editor.getByRole('menuitem', { name: 'Paragraph below' }).click();
   await started;
   await paragraph.evaluate((element) => element.remove());
   releaseResponse();
@@ -1485,7 +2596,8 @@ test('adds, edits, and deletes a source-backed block', async ({ page }) => {
   await first.click();
   const editor = page.locator('#astro-wysiwyg-toolbar');
 
-  await editor.getByRole('button', { name: 'Add block below' }).click();
+  await editor.getByRole('button', { name: 'Insert' }).click();
+  await editor.getByRole('menuitem', { name: 'Paragraph below' }).click();
 
   await expect.poll(async () => readFile(blocksFile, 'utf8')).toContain(
     'First block.\n\nNew paragraph\n\nSecond block.',
@@ -1512,7 +2624,9 @@ test('offers all six heading levels in the toolbar', async ({ page }) => {
   await paragraph.click();
   const editor = page.locator('#astro-wysiwyg-toolbar');
 
-  await editor.getByRole('button', { name: 'Heading 6' }).click();
+  await editor.getByRole('button', { name: 'Text style: Paragraph' }).click();
+  await editor.getByRole('menuitem', { name: 'Heading 6' }).click();
+  await expect(editor.getByRole('button', { name: 'Text style: Heading 6' })).toBeVisible();
 
   await expect.poll(async () => readFile(headingFile, 'utf8')).toContain(
     '###### Turn this paragraph into a level six heading.',
@@ -1542,6 +2656,7 @@ test('changes a Markdown paragraph between bullet and numbered lists', async ({ 
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
   const editor = page.locator('#astro-wysiwyg-toolbar');
   await editor.getByRole('button', { name: 'Bullet list' }).click();
+  await expect(editor.getByRole('button', { name: 'Bullet list' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(async () => readFile(listFile, 'utf8')).toContain('- Turn this paragraph into a list.');
 
   await page.waitForTimeout(2_500);
@@ -1551,7 +2666,7 @@ test('changes a Markdown paragraph between bullet and numbered lists', async ({ 
   await expect.poll(async () => readFile(listFile, 'utf8')).toContain('1. Turn this paragraph into a list.');
 });
 
-test('undoes a saved wrapped-paragraph edit after Astro reload without repeat writes', async ({ page }) => {
+test('undoes a saved wrapped-paragraph edit without an Astro reload or repeat write', async ({ page }) => {
   const before = await readFile(cardFile, 'utf8');
   await page.goto('/articles/example');
   const paragraph = page.locator('[data-article-version-panel="latest"] > p');
@@ -1566,7 +2681,7 @@ test('undoes a saved wrapped-paragraph edit after Astro reload without repeat wr
   await expect.poll(async () => readFile(cardFile, 'utf8')).toBe(before);
 });
 
-test('undoes a saved card edit after Astro reloads', async ({ page }) => {
+test('undoes a saved card edit without an Astro reload', async ({ page }) => {
   const before = await readFile(cardFile, 'utf8');
   await page.goto('/cards');
   const title = page.locator('h2.card-title');

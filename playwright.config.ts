@@ -22,7 +22,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'node tests/prepare-e2e.mjs && cd .tmp/e2e-site && VITE_COVERAGE=true ../../node_modules/.bin/astro dev --host 127.0.0.1 --port 4328',
+    command: 'node tests/prepare-e2e.mjs && cd .tmp/e2e-site && ASTRO_WYSIWYG_E2E=true VITE_COVERAGE=true ../../node_modules/.bin/astro dev --host 127.0.0.1 --port 4328',
     url: 'http://127.0.0.1:4328',
     reuseExistingServer: false,
     timeout: 60_000,

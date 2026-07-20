@@ -1,0 +1,44 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const dynamicText = 'Dynamic text stays source-safe';
+---
+<BaseLayout title="Astro editing">
+  <h1>Editable Astro page</h1>
+  <p class="lead">Edit this text without losing its style.</p>
+  <p>{dynamicText}</p>
+  <p>
+    Click a source-backed paragraph or heading. The editor writes safe changes to the
+    Astro, Markdown, or MDX file that rendered it.
+  </p>
+
+  <section aria-labelledby="formats-title">
+    <h2 id="formats-title">Browse each source format</h2>
+    <div class="demo-grid">
+      <article class="demo-card">
+        <h3><a href="/">Astro</a></h3>
+        <p>Edit static elements while expressions stay read-only.</p>
+      </article>
+      <article class="demo-card">
+        <h3><a href="/article">Markdown</a></h3>
+        <p>Edit prose, frontmatter, inline formatting, and block structure.</p>
+      </article>
+      <article class="demo-card">
+        <h3><a href="/mdx">MDX</a></h3>
+        <p>Edit safe prose next to component output.</p>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="capabilities-title">
+    <h2 id="capabilities-title">Review supported capabilities</h2>
+    <div class="demo-grid">
+      <article class="demo-card"><h3><a href="/blocks">Block structure</a></h3><p>Insert, convert, delete, and undo blocks.</p></article>
+      <article class="demo-card"><h3><a href="/links">Links</a></h3><p>Add, edit, validate, and remove links.</p></article>
+      <article class="demo-card"><h3><a href="/lists">Lists</a></h3><p>Convert paragraphs and switch list types.</p></article>
+      <article class="demo-card"><h3><a href="/keyboard">Keyboard</a></h3><p>Enter editing, open the toolbar, save, and finish without a pointer.</p></article>
+      <article class="demo-card"><h3><a href="/router-one">Navigation</a></h3><p>Keep one editor instance across ClientRouter navigation.</p></article>
+      <article class="demo-card"><h3><a href="/resilience/">Recovery</a></h3><p>Open isolated routes for failure and reload scenarios.</p></article>
+    </div>
+  </section>
+</BaseLayout>

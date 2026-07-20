@@ -1,0 +1,17 @@
+---
+layout: ../layouts/Layout.astro
+title: MDX video replacement
+description: Replace a native source-backed MDX video while preserving tracks and fallback content.
+---
+# MDX video replacement
+
+Select the native player, then use **Replace video** to choose an uploaded or existing public H.264 MP4.
+
+<figure class="video-example">
+  <video controls preload="none" aria-label="MDX replaceable video example" poster="/assets/astro-wysiwyg-video-poster.png" muted playsinline>
+    <source src="/assets/astro-wysiwyg-demo.mp4" type="video/mp4" />
+    <track kind="captions" src="/assets/astro-wysiwyg-demo.vtt" srclang="en" label="English" default />
+    <a href="/assets/astro-wysiwyg-demo.mp4" download>Download the MDX video example</a>. <a href="/video-mdx">Read the video notes</a>.
+  </video>
+  <figcaption>This MDX description and the native fallback stay intact unless an author edits the description.</figcaption>
+</figure>

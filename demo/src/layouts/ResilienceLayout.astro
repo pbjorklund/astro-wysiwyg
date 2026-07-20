@@ -1,0 +1,19 @@
+---
+const { frontmatter = {} } = Astro.props;
+const title = frontmatter.title ?? 'Editor resilience target';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{title} | Astro WYSIWYG demo</title>
+  </head>
+  <body>
+    <main>
+      {frontmatter.title && <h1 class="frontmatter-title">{frontmatter.title}</h1>}
+      <slot />
+    </main>
+    <footer><a href="/resilience/">All resilience routes</a></footer>
+  </body>
+</html>
