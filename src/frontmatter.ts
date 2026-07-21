@@ -54,7 +54,7 @@ export async function updateFrontmatterFields(
     const fieldsByName = new Map(fields.map((field) => [field.name, field]));
     for (const [name, change] of Object.entries(changes)) {
       const field = fieldsByName.get(name);
-      if (!field) throw new Error(`The ${name} frontmatter field does not exist.`);
+      if (!field) throw new FrontmatterEditError(`The ${name} frontmatter field does not exist.`, 400);
       if (field.original !== change.original) {
         throw new FrontmatterEditError(
           `The ${name} frontmatter field changed on disk. Close and reopen the frontmatter editor before saving again.`,
@@ -89,27 +89,27 @@ async function resolveContextFile(root: string, token: string, writableRoot: str
   const [rootPath, writableRootPath] = await Promise.all([realpath(root), realpath(writableRoot)]);
   const candidate = path.resolve(rootPath, marker.file);
   if (!isInsideProjectRoot(rootPath, candidate)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new FrontmatterEditError('The requested file is outside the Astro project root.', 403);
   }
   if (!isInsideProjectRoot(writableRootPath, candidate)) {
     throw new FrontmatterEditError('Frontmatter edits are limited to the configured Astro source directory.', 403);
   }
   const file = await realpath(candidate);
   if (!isInsideProjectRoot(rootPath, file)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new FrontmatterEditError('The requested file is outside the Astro project root.', 403);
   }
   if (!isInsideProjectRoot(writableRootPath, file)) {
     throw new FrontmatterEditError('Frontmatter edits are limited to the configured Astro source directory.', 403);
   }
   if (!['.md', '.mdx'].includes(path.extname(file).toLowerCase())) {
-    throw new Error('This source file has no editable frontmatter.');
+    throw new FrontmatterEditError('This source file has no editable frontmatter.', 400);
   }
   return file;
 }
 
 function parseFrontmatter(source: string): ParsedField[] {
   const end = source.indexOf('\n---', 3);
-  if (!source.startsWith('---') || end < 0) throw new Error('The content file has no frontmatter.');
+  if (!source.startsWith('---') || end < 0) throw new FrontmatterEditError('The content file has no frontmatter.', 400);
   const frontmatter = source.slice(0, end);
   const fields: ParsedField[] = [];
   const pattern = /^([A-Za-z_][\w-]*):[ \t]*(.+?)[ \t]*$/gm;

@@ -1379,6 +1379,21 @@ test('save endpoint resolves Astro markers and applies structural edits', async 
   assert.equal(await readFile(file, 'utf8'), '<p>Old</p>\n');
 });
 
+test('save endpoint returns 400 instead of 500 for non-editable Astro source', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
+  const file = path.join(root, 'page.astro');
+  await writeFile(file, '<p>{dynamic}</p>\n');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const middleware = await saveMiddleware(root);
+
+  const resolved = await send(middleware, JSON.stringify({
+    sourceFile: file,
+    sourceLocation: '1:2',
+  }));
+  assert.equal(resolved.statusCode, 400);
+  assert.match(resolved.body, /not a static editable block/);
+});
+
 test('save endpoint rejects malformed, incomplete, and oversized edit payloads', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-endpoint-'));
   t.after(() => rm(root, { recursive: true, force: true }));

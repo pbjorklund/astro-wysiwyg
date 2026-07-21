@@ -6,6 +6,7 @@ import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
 import { isInsideProjectRoot } from './project-path.ts';
 import { inspectSourceVideoFigure } from './video-markup.ts';
 import { inspectSourceIframe } from './iframe-markup.ts';
+import { SourceEditError } from './persist.ts';
 
 const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const INLINE_TAGS = new Set([
@@ -53,14 +54,14 @@ export async function resolveAstroSourceMarker(
   const rootPath = await realpath(root);
   const candidate = path.isAbsolute(sourceFile) ? path.resolve(sourceFile) : path.resolve(rootPath, sourceFile);
   if (!isInsideProjectRoot(rootPath, candidate)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
   }
   const file = await realpath(candidate);
   if (!isInsideProjectRoot(rootPath, file)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
   }
   if (path.extname(file).toLowerCase() !== '.astro') {
-    throw new Error('Only Astro source locations can be resolved.');
+    throw new SourceEditError('Only Astro source locations can be resolved.', 400);
   }
 
   const source = await readFile(file, 'utf8');
@@ -104,7 +105,7 @@ export async function resolveAstroSourceMarker(
         return resolveFrontmatterMarker(rootPath, dynamicMatch, context.contextMarker, context.renderedText);
       }
     }
-    throw new Error('This text is not a static editable block.');
+    throw new SourceEditError('This text is not a static editable block.', 400);
   }
   const sourceEnd = nodeSourceEnd(source, tag, end);
   const original = source.slice(start, sourceEnd);
@@ -128,7 +129,7 @@ async function resolveLinkedFrontmatterMarker(
   const segments = pathname.split('/').filter(Boolean);
   const slug = segments.at(-1);
   const routeCollection = segments.at(-2);
-  if (!slug || !routeCollection) throw new Error('The linked content file could not be identified.');
+  if (!slug || !routeCollection) throw new SourceEditError('The linked content file could not be identified.', 400);
   const collections = new Set([
     routeCollection,
     routeCollection.endsWith('s') ? routeCollection.slice(0, -1) : `${routeCollection}s`,
@@ -148,7 +149,7 @@ async function resolveLinkedFrontmatterMarker(
       }
     }
   }
-  throw new Error('No linked content frontmatter matched this rendered text.');
+  throw new SourceEditError('No linked content frontmatter matched this rendered text.', 400);
 }
 
 async function resolveFrontmatterMarker(
@@ -159,32 +160,32 @@ async function resolveFrontmatterMarker(
 ): Promise<string> {
   const context = decodeMarker(contextToken);
   if (context.format !== 'markdown' && context.format !== 'frontmatter') {
-    throw new Error('The current content file could not be identified.');
+    throw new SourceEditError('The current content file could not be identified.', 400);
   }
   const candidate = path.resolve(root, context.file);
   if (!isInsideProjectRoot(root, candidate)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
   }
   const file = await realpath(candidate);
   if (!isInsideProjectRoot(root, file)) {
-    throw new Error('The requested file is outside the Astro project root.');
+    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
   }
   if (!['.md', '.mdx'].includes(path.extname(file).toLowerCase())) {
-    throw new Error('The current content file has no editable frontmatter.');
+    throw new SourceEditError('The current content file has no editable frontmatter.', 400);
   }
 
   const source = await readFile(file, 'utf8');
   const frontmatterEnd = source.indexOf('\n---', 3);
   if (!source.startsWith('---') || frontmatterEnd < 0) {
-    throw new Error('The current content file has no editable frontmatter.');
+    throw new SourceEditError('The current content file has no editable frontmatter.', 400);
   }
   const frontmatter = source.slice(0, frontmatterEnd);
   const fieldPattern = new RegExp(`^(\\s*${dynamic.field}\\s*:\\s*)(.+?)\\s*$`, 'm');
   const match = fieldPattern.exec(frontmatter);
-  if (!match) throw new Error(`The ${dynamic.field} frontmatter field was not found.`);
+  if (!match) throw new SourceEditError(`The ${dynamic.field} frontmatter field was not found.`, 400);
   const rawValue = match[2].trim();
   if (parseYamlScalar(rawValue) !== renderedText.trim()) {
-    throw new Error(`The rendered ${dynamic.field} does not match the current content file.`);
+    throw new SourceEditError(`The rendered ${dynamic.field} does not match the current content file.`, 400);
   }
   const valueStart = match.index + match[1].length + match[2].indexOf(rawValue);
   return encodeMarker(createMarker(
@@ -358,18 +359,18 @@ function span(node: AstroNode): number {
 
 function locationToOffset(source: string, location: string): number {
   const match = /^(\d+):(\d+)$/.exec(location);
-  if (!match) throw new Error('The Astro source location is invalid.');
+  if (!match) throw new SourceEditError('The Astro source location is invalid.', 400);
   const line = Number(match[1]);
   const column = Number(match[2]);
-  if (line < 1 || column < 1) throw new Error('The Astro source location is invalid.');
+  if (line < 1 || column < 1) throw new SourceEditError('The Astro source location is invalid.', 400);
   let offset = 0;
   for (let currentLine = 1; currentLine < line; currentLine += 1) {
     const newline = source.indexOf('\n', offset);
-    if (newline < 0) throw new Error('The Astro source location is invalid.');
+    if (newline < 0) throw new SourceEditError('The Astro source location is invalid.', 400);
     offset = newline + 1;
   }
   const result = offset + column - 1;
-  if (result > source.length) throw new Error('The Astro source location is invalid.');
+  if (result > source.length) throw new SourceEditError('The Astro source location is invalid.', 400);
   return result;
 }
 
