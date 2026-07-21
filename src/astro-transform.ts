@@ -14,6 +14,32 @@ const INLINE_TAGS = new Set([
   'img', 'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
 ]);
 
+/**
+ * The Astro compiler reports position offsets as UTF-8 byte indices, but
+ * JavaScript strings use UTF-16 code unit indices. When a source file contains
+ * non-ASCII characters (for example Swedish text), the two systems diverge and
+ * every offset comparison or source.slice call breaks. This helper converts a
+ * compiler byte offset back to a JS string index for a given source string.
+ */
+function byteOffsetToStringIndex(source: string, byteOffset: number): number {
+  if (byteOffset <= 0) return 0;
+  const utf8Bytes = Buffer.byteLength(source, 'utf8');
+  if (byteOffset >= utf8Bytes) return source.length;
+  // Binary search: find the JS string index whose UTF-8 byte length matches.
+  let low = 0;
+  let high = source.length;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (Buffer.byteLength(source.slice(0, mid), 'utf8') <= byteOffset) low = mid;
+    else high = mid - 1;
+  }
+  return low;
+}
+
+function compilerOffset(source: string, offset: number | undefined): number | undefined {
+  return offset === undefined ? undefined : byteOffsetToStringIndex(source, offset);
+}
+
 interface Position {
   start?: { offset?: number };
   end?: { offset?: number };
@@ -71,8 +97,8 @@ export async function resolveAstroSourceMarker(
   let dynamicMatch: { field: string; tag: string } | undefined;
   visit(result.ast as AstroNode, (node) => {
     const tag = node.name?.toLowerCase();
-    const start = node.position?.start?.offset;
-    const end = node.position?.end?.offset;
+    const start = compilerOffset(source, node.position?.start?.offset);
+    const end = compilerOffset(source, node.position?.end?.offset);
     if (!tag || start === undefined || end === undefined) return;
     if (offset < start || offset > end) return;
     const sourceEnd = nodeSourceEnd(source, tag, end);
@@ -94,8 +120,8 @@ export async function resolveAstroSourceMarker(
   matches.sort((left, right) => span(left) - span(right));
   const node = matches[0];
   const tag = node?.name?.toLowerCase();
-  const start = node?.position?.start?.offset;
-  const end = node?.position?.end?.offset;
+  const start = node ? compilerOffset(source, node.position?.start?.offset) : undefined;
+  const end = node ? compilerOffset(source, node.position?.end?.offset) : undefined;
   if (!node || !tag || start === undefined || end === undefined) {
     if (dynamicMatch && context.renderedText !== undefined) {
       if (context.contextHref) {
@@ -229,8 +255,8 @@ export async function annotateAstroSource(
   const insertions: Insertion[] = [];
   visit(result.ast as AstroNode, (node) => {
     const tag = node.name?.toLowerCase();
-    const start = node.position?.start?.offset;
-    const end = node.position?.end?.offset;
+    const start = compilerOffset(source, node.position?.start?.offset);
+    const end = compilerOffset(source, node.position?.end?.offset);
     if (!tag || start === undefined || end === undefined) return;
     const sourceEnd = nodeSourceEnd(source, tag, end);
     const original = source.slice(start, sourceEnd);

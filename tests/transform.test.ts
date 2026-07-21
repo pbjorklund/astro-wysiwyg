@@ -90,6 +90,25 @@ test('resolves Astro dev source locations to safe static blocks', async (t) => {
   await assert.rejects(resolveAstroSourceMarker(root, file, '4:6'), /not a static editable block/);
 });
 
+test('resolves Astro source locations in files with non-ASCII (UTF-8) content', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-utf8-'));
+  const file = path.join(root, 'page.astro');
+  const frontmatter = '---\ntitle: "Åtgärder och förbättringar"\ndescription: "Swedish text with ä, ö, å characters"\n---\n\n';
+  const body = '<main>\n  <p class="kicker">Plattform för verksamhetsstyrning</p>\n  <p>Processer, mål, risker och avvikelser finns på ett ställe.</p>\n</main>';
+  await writeFile(file, frontmatter + body);
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  // The Astro compiler reports UTF-8 byte offsets, not JS string indices.
+  // Lines are 1-indexed from the file start (including frontmatter).
+  // Frontmatter is 4 lines, so the kicker <p> is on line 6.
+  const kickerLine = frontmatter.split('\n').length; // line where <main> starts
+  const kicker = await resolveAstroSourceMarker(root, file, `${kickerLine + 1}:17`);
+  assert.equal(decodeMarker(kicker).original, '<p class="kicker">Plattform för verksamhetsstyrning</p>');
+
+  const subtitle = await resolveAstroSourceMarker(root, file, `${kickerLine + 2}:6`);
+  assert.equal(decodeMarker(subtitle).original, '<p>Processer, mål, risker och avvikelser finns på ett ställe.</p>');
+});
+
 test('chooses the smallest nested static Astro block', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-nested-'));
   const file = path.join(root, 'page.astro');
