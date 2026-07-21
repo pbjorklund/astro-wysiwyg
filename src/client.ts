@@ -1146,12 +1146,15 @@ export function startEditor(options: EditorOptions): void {
     const dialog = shadow.querySelector<HTMLDialogElement>('.image-editor');
     const form = dialog?.querySelector<HTMLFormElement>('form');
     /* istanbul ignore next -- Upload is available only inside the static image form. */
-    if (!dialog || !form || !form.reportValidity()) return;
+    if (!dialog || !form) return;
     const fileInput = form.querySelector<HTMLInputElement>('[name="image-file"]');
     const destination = form.querySelector<HTMLInputElement>('[name="destination"]');
-    const file = fileInput?.files?.[0];
+    /* Validate only the upload fields, not the alt text (needed at insert time). */
+    /* istanbul ignore next -- The form elements are present in the static dialog markup. */
+    if (!fileInput || !destination || !fileInput.reportValidity() || !destination.reportValidity()) return;
+    const file = fileInput.files?.[0];
     /* istanbul ignore next -- The required file input is checked by reportValidity. */
-    if (!file || !destination) return;
+    if (!file) return;
     setImageBusy(true);
     setImageMessage('Uploading image...');
     try {
@@ -1486,9 +1489,10 @@ export function startEditor(options: EditorOptions): void {
   async function uploadVideo(): Promise<void> {
     const dialog = shadow.querySelector<HTMLDialogElement>('.video-editor')!;
     const form = dialog.querySelector<HTMLFormElement>('form')!;
-    if (!validateVideoOptions() || !form.reportValidity()) return;
     const fileInput = form.querySelector<HTMLInputElement>('[name="video-file"]')!;
     const destination = form.querySelector<HTMLInputElement>('[name="video-destination"]')!;
+    /* Validate only the upload fields, not the label/description (needed at insert time). */
+    if (!validateVideoOptions() || !fileInput.reportValidity() || !destination.reportValidity()) return;
     const file = fileInput.files?.[0];
     /* istanbul ignore next -- The required file is checked by reportValidity. */
     if (!file) return;
