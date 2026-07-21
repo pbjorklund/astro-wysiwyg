@@ -2346,12 +2346,15 @@ test('maps marked list items back to their editable parent list', async ({ page 
   await expect(list).toHaveAttribute('contenteditable', 'true');
 });
 
-test('leaves dynamic Astro expressions uneditable', async ({ page }) => {
+test('leaves dynamic Astro expressions uneditable and shows a notice', async ({ page }) => {
   await page.goto('/');
   const dynamic = page.locator('p').filter({ hasText: 'Dynamic text' });
   await expect(dynamic).not.toHaveAttribute('data-astro-wysiwyg', /.+/);
   await dynamic.click();
   await expect(dynamic).not.toHaveAttribute('contenteditable', 'true');
+  const notice = page.locator('[data-astro-wysiwyg-notice]');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('Not editable');
 });
 
 test('edits rendered card frontmatter through its article link', async ({ page }) => {

@@ -193,6 +193,15 @@ export function startEditor(options: EditorOptions): void {
     html[data-astro-wysiwyg-highlights] :is(${EDITABLE_SELECTOR}):hover { outline: 1px dashed Highlight; outline-offset: 3px; }
     html[data-astro-wysiwyg-highlights] :is(${EDITABLE_SELECTOR}):focus-visible,
     [${ACTIVE_ATTRIBUTE}] { outline: 2px solid Highlight !important; outline-offset: 3px; }
+    [data-astro-wysiwyg-notice] {
+      position: relative; z-index: 9999; box-sizing: border-box; display: block;
+      max-width: calc(100vw - 32px); margin: 0 0 8px; padding: 12px 16px;
+      color: #fef3c7; background: #78350f; border: 2px solid #f59e0b; border-radius: 6px;
+      font: 600 15px/1.4 ui-sans-serif, system-ui, sans-serif; cursor: pointer;
+      box-shadow: 0 4px 12px rgb(0 0 0 / 30%); animation: wysiwyg-notice-in 0.2s ease-out;
+    }
+    [data-astro-wysiwyg-notice]:hover { background: #92400e; }
+    @keyframes wysiwyg-notice-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
   `;
   document.head.append(globalStyle);
   applyPreferences(preferences);
@@ -306,6 +315,10 @@ export function startEditor(options: EditorOptions): void {
       for (const element of document.querySelectorAll<HTMLElement>('[data-wysiwyg-added-description]')) {
         removeEditDescription(element);
       }
+      /* istanbul ignore next -- Notices are cleaned up by their own timeout; this is defensive cleanup on disable. */
+      for (const notice of document.querySelectorAll<HTMLElement>('[data-astro-wysiwyg-notice]')) {
+        notice.remove();
+      }
       for (const shell of document.querySelectorAll<HTMLElement>('[data-astro-wysiwyg-iframe-shell]')) {
         const iframe = shell.querySelector<HTMLIFrameElement>(':scope > iframe');
         if (iframe) shell.replaceWith(iframe);
@@ -411,6 +424,19 @@ export function startEditor(options: EditorOptions): void {
     delete element.dataset.wysiwygAddedDescription;
   }
 
+  function showNonEditableNotice(element: HTMLElement, message: string): void {
+    const notice = document.createElement('div');
+    notice.dataset.astroWysiwygNotice = '';
+    notice.setAttribute('role', 'alert');
+    notice.textContent = `Not editable: ${message}`;
+    element.before(notice);
+    setStatus(message, true);
+    /* istanbul ignore next -- The timeout and click-dismiss callbacks are tested visually. */
+    const clear = () => { notice.remove(); };
+    setTimeout(clear, 5000);
+    notice.addEventListener('click', clear);
+  }
+
   function onDocumentClick(event: MouseEvent): void {
     if (!preferences.enabled) return;
     const target = event.target;
@@ -438,7 +464,13 @@ export function startEditor(options: EditorOptions): void {
 
   async function activate(block: HTMLElement): Promise<HTMLElement | undefined> {
     if (!preferences.enabled) return undefined;
-    if (!block.hasAttribute(MARKER_ATTRIBUTE) && !await resolveSourceMarker(block)) return undefined;
+    if (!block.hasAttribute(MARKER_ATTRIBUTE)) {
+      const resolved = await resolveSourceMarker(block);
+      if (resolved !== true) {
+        showNonEditableNotice(block, resolved);
+        return undefined;
+      }
+    }
     setRovingTabStop(block);
     if (active === block) return active;
     if (isFrontmatterEditorOpen()) closeFrontmatterEditor();
@@ -583,11 +615,11 @@ export function startEditor(options: EditorOptions): void {
     }
   }
 
-  async function resolveSourceMarker(element: HTMLElement): Promise<boolean> {
+  async function resolveSourceMarker(element: HTMLElement): Promise<string | true> {
     const sourceFile = element.dataset.wysiwygSourceFile;
     const sourceLocation = element.dataset.wysiwygSourceLoc;
     /* istanbul ignore next -- The editable source selector requires both attributes. */
-    if (!sourceFile || !sourceLocation) return false;
+    if (!sourceFile || !sourceLocation) return 'This block has no source location.';
     try {
       const contextMarker = document.querySelector<HTMLElement>(`[${MARKER_ATTRIBUTE}]`)
         ?.getAttribute(MARKER_ATTRIBUTE) ?? undefined;
@@ -603,7 +635,7 @@ export function startEditor(options: EditorOptions): void {
         }),
       });
       const body = await response.json() as SaveResponse;
-      if (!response.ok || !body.marker) return false;
+      if (!response.ok || !body.marker) return body.error ?? 'This block could not be mapped to its source.';
       element.setAttribute(MARKER_ATTRIBUTE, body.marker);
       if (element.localName === 'figure'
         && element.querySelectorAll(':scope > video > source[type="video/mp4"]').length === 1) {
@@ -613,7 +645,7 @@ export function startEditor(options: EditorOptions): void {
       }
       return true;
     } catch {
-      return false;
+      return 'The source marker could not be resolved.';
     }
   }
 
