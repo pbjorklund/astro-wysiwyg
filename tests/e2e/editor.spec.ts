@@ -176,6 +176,14 @@ test('restores an active source-located Astro block after reload', async ({ page
   await page.reload();
   await expect(paragraph).toHaveAttribute('contenteditable', 'true');
   await expect(paragraph).toBeFocused();
+
+  await paragraph.press('Escape');
+  const linkedHeading = page.getByRole('heading', { name: 'Astro', exact: true });
+  await linkedHeading.click();
+  await expect(linkedHeading).toHaveAttribute('contenteditable', 'true');
+  await page.reload();
+  await expect(linkedHeading).toHaveAttribute('contenteditable', 'true');
+  await expect(linkedHeading).toBeFocused();
 });
 
 test('edits article frontmatter from the Astro dev-toolbar app without selecting content', async ({ page }) => {
