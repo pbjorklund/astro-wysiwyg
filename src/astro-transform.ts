@@ -264,6 +264,7 @@ export async function annotateAstroSourceLocations(
       || start === undefined || end === undefined
       || line === undefined || column === undefined) return;
     const openingEnd = findOpeningTagEnd(source, start, nodeSourceEnd(source, tag, end));
+    /* c8 ignore next -- positioned compiler elements always have a complete opening tag. */
     if (openingEnd < 0) return;
     const file = relative.split(path.sep).join('/')
       .replaceAll('&', '&amp;')
@@ -271,7 +272,7 @@ export async function annotateAstroSourceLocations(
     let insertionOffset = openingEnd;
     if (source[insertionOffset - 1] === '/') {
       insertionOffset -= 1;
-      while (/\s/.test(source[insertionOffset - 1] ?? '')) insertionOffset -= 1;
+      while (/\s/.test(source[insertionOffset - 1]!)) insertionOffset -= 1;
     }
     insertions.push({
       offset: insertionOffset,

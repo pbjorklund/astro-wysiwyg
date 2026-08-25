@@ -103,6 +103,7 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
             },
           vite: {
             plugins: [
+              /* c8 ignore next -- Astro 5 and 6 compatibility runs cover the native-annotation branch. */
               ...(astroMajorVersion() >= 7 ? [createAstroSourceAnnotationPlugin(projectRoot)] : []),
               editorWrites.plugin,
             ],
@@ -395,8 +396,8 @@ function registerSaveEndpoint(
 function astroMajorVersion(): number {
   const require = createRequire(import.meta.url);
   const packagePath = require.resolve('astro/package.json');
-  const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: string };
-  return Number.parseInt(packageJson.version?.split('.', 1)[0] ?? '0', 10);
+  const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { version: string };
+  return Number.parseInt(packageJson.version.split('.', 1)[0], 10);
 }
 
 function createAstroSourceAnnotationPlugin(root: string): Plugin {

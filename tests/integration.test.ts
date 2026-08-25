@@ -1108,7 +1108,15 @@ test('reuses a configured unified Markdown processor', async () => {
   assert.equal(remarkPlugins.length, 1);
   const configured = update as {
     markdown: { processor: unknown };
-    vite: { plugins: Array<{ name: string; enforce?: string }> };
+    vite: {
+      plugins: Array<{
+        name: string;
+        enforce?: string;
+        transform?: {
+          handler(source: string, id: string): Promise<{ code: string; map: null } | undefined>;
+        };
+      }>;
+    };
   };
   assert.equal(configured.markdown.processor, processor);
   assert.deepEqual(
@@ -1117,6 +1125,18 @@ test('reuses a configured unified Markdown processor', async () => {
       { name: 'astro-wysiwyg:source-annotations', enforce: 'pre' },
       { name: 'astro-wysiwyg:quiet-editor-writes', enforce: 'pre' },
     ],
+  );
+  const annotation = configured.vite.plugins[0].transform;
+  assert.ok(annotation);
+  assert.equal(await annotation.handler('export default 1', '/project/example.ts'), undefined);
+  assert.equal(
+    await annotation.handler('<p>Style request</p>', '/project/page.astro?astro&type=style'),
+    undefined,
+  );
+  assert.equal(await annotation.handler('<Component />', '/project/page.astro'), undefined);
+  assert.match(
+    (await annotation.handler('<p>Annotated</p>', '/project/page.astro'))?.code ?? '',
+    /data-astro-source-file/,
   );
 });
 

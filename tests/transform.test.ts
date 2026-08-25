@@ -37,6 +37,13 @@ test('adds Astro 7 source locations to static and dynamic editable tags', async 
     transformed ?? '',
     /<hr data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="4:3" \/>/,
   );
+  assert.match(
+    await annotateAstroSourceLocations('<hr/>', '/project/divider.astro', '/project') ?? '',
+    /<hr data-astro-source-file="divider\.astro" data-astro-source-loc="1:1"\/>/,
+  );
+  assert.equal(await annotateAstroSourceLocations('<Component />', '/project/page.astro', '/project'), null);
+  assert.equal(await annotateAstroSourceLocations('<p>Text</p>', '/project', '/project'), null);
+  assert.equal(await annotateAstroSourceLocations('<p>Text</p>', '/outside/page.astro', '/project'), null);
 });
 
 test('annotates static Astro blocks without changing their source range', async () => {
