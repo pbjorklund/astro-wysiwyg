@@ -7,9 +7,11 @@ import { isInsideProjectRoot } from './project-path.ts';
 import { inspectSourceVideoFigure } from './video-markup.ts';
 import { inspectSourceIframe } from './iframe-markup.ts';
 import { SourceEditError } from './persist.ts';
+import { resolveRenderedFrontmatterMarker } from './frontmatter.ts';
 
 const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
 const SOURCE_LOCATION_TAGS = new Set([...EDITABLE_BLOCK_TAGS, 'figure', 'iframe']);
+const DYNAMIC_SOURCE_LOCATION_TAGS = new Set(['span']);
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
   'img', 'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
@@ -96,6 +98,7 @@ export async function resolveAstroSourceMarker(
   const result = await parse(source, { position: true });
   const matches: AstroNode[] = [];
   let dynamicMatch: { field: string; tag: string } | undefined;
+  let dynamicTag: string | undefined;
   visit(result.ast as AstroNode, (node) => {
     const tag = node.name?.toLowerCase();
     const start = compilerOffset(source, node.position?.start?.offset);
@@ -110,6 +113,7 @@ export async function resolveAstroSourceMarker(
       matches.push(node);
       return;
     }
+    if (hasDynamicText(node)) dynamicTag = tag;
     if (!node.children?.length || !BLOCK_TAGS.has(tag)) return;
     if (node.children.every(isStaticInlineNode) && node.children.every((child) => hasResolvableImageSources(child, source))) {
       matches.push(node);
@@ -124,12 +128,16 @@ export async function resolveAstroSourceMarker(
   const start = node ? compilerOffset(source, node.position?.start?.offset) : undefined;
   const end = node ? compilerOffset(source, node.position?.end?.offset) : undefined;
   if (!node || !tag || start === undefined || end === undefined) {
-    if (dynamicMatch && context.renderedText !== undefined) {
+    if (dynamicTag && context.renderedText !== undefined) {
       if (context.contextHref) {
-        return resolveLinkedFrontmatterMarker(rootPath, dynamicMatch, context.contextHref, context.renderedText);
+        return resolveLinkedFrontmatterMarker(
+          rootPath, dynamicMatch?.field, dynamicTag, context.contextHref, context.renderedText,
+        );
       }
       if (context.contextMarker) {
-        return resolveFrontmatterMarker(rootPath, dynamicMatch, context.contextMarker, context.renderedText);
+        return resolveFrontmatterMarker(
+          rootPath, dynamicMatch?.field, dynamicTag, context.contextMarker, context.renderedText,
+        );
       }
     }
     throw new SourceEditError('This text is not a static editable block.', 400);
@@ -148,7 +156,8 @@ export async function resolveAstroSourceMarker(
 
 async function resolveLinkedFrontmatterMarker(
   root: string,
-  dynamic: { field: string; tag: string },
+  field: string | undefined,
+  tag: string,
   href: string,
   renderedText: string,
 ): Promise<string> {
@@ -169,7 +178,7 @@ async function resolveLinkedFrontmatterMarker(
       ]) {
         const token = encodeMarker(createMarker(relative, 0, 0, '', 'markdown', 'p'));
         try {
-          return await resolveFrontmatterMarker(root, dynamic, token, renderedText);
+          return await resolveFrontmatterMarker(root, field, tag, token, renderedText);
         } catch {
           // Try the next conventional Astro content path.
         }
@@ -181,7 +190,8 @@ async function resolveLinkedFrontmatterMarker(
 
 async function resolveFrontmatterMarker(
   root: string,
-  dynamic: { field: string; tag: string },
+  field: string | undefined,
+  tag: string,
   contextToken: string,
   renderedText: string,
 ): Promise<string> {
@@ -189,58 +199,17 @@ async function resolveFrontmatterMarker(
   if (context.format !== 'markdown' && context.format !== 'frontmatter') {
     throw new SourceEditError('The current content file could not be identified.', 400);
   }
-  const candidate = path.resolve(root, context.file);
-  if (!isInsideProjectRoot(root, candidate)) {
-    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
-  }
-  const file = await realpath(candidate);
-  if (!isInsideProjectRoot(root, file)) {
-    throw new SourceEditError('The requested file is outside the Astro project root.', 403);
-  }
-  if (!['.md', '.mdx'].includes(path.extname(file).toLowerCase())) {
-    throw new SourceEditError('The current content file has no editable frontmatter.', 400);
-  }
+  return resolveRenderedFrontmatterMarker(root, contextToken, renderedText, field, tag);
+}
 
-  const source = await readFile(file, 'utf8');
-  const frontmatterEnd = source.indexOf('\n---', 3);
-  if (!source.startsWith('---') || frontmatterEnd < 0) {
-    throw new SourceEditError('The current content file has no editable frontmatter.', 400);
-  }
-  const frontmatter = source.slice(0, frontmatterEnd);
-  const fieldPattern = new RegExp(`^(\\s*${dynamic.field}\\s*:\\s*)(.+?)\\s*$`, 'm');
-  const match = fieldPattern.exec(frontmatter);
-  if (!match) throw new SourceEditError(`The ${dynamic.field} frontmatter field was not found.`, 400);
-  const rawValue = match[2].trim();
-  if (parseYamlScalar(rawValue) !== renderedText.trim()) {
-    throw new SourceEditError(`The rendered ${dynamic.field} does not match the current content file.`, 400);
-  }
-  const valueStart = match.index + match[1].length + match[2].indexOf(rawValue);
-  return encodeMarker(createMarker(
-    context.file,
-    valueStart,
-    valueStart + rawValue.length,
-    rawValue,
-    'frontmatter',
-    dynamic.tag,
-  ));
+function hasDynamicText(node: AstroNode): boolean {
+  return Boolean(node.children?.some((child) => child.type === 'expression'));
 }
 
 function dataField(node: AstroNode): string | undefined {
   if (node.children!.length !== 1 || node.children![0].type !== 'expression') return undefined;
   const expression = node.children![0].children!.map((child) => child.value).join('').trim();
   return /(?:^|\.)(?:data|frontmatter)\.([A-Za-z_$][\w$]*)$/.exec(expression)?.[1];
-}
-
-function parseYamlScalar(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"')) {
-    try {
-      return JSON.parse(value) as string;
-    } catch {
-      return value.slice(1, -1);
-    }
-  }
-  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
-  return value;
 }
 
 export async function annotateAstroSourceLocations(
@@ -260,7 +229,11 @@ export async function annotateAstroSourceLocations(
     const end = compilerOffset(source, node.position?.end?.offset);
     const line = node.position?.start?.line;
     const column = node.position?.start?.column;
-    if (!tag || !SOURCE_LOCATION_TAGS.has(tag)
+    const isSourceCandidate = Boolean(tag && (
+      SOURCE_LOCATION_TAGS.has(tag)
+      || (DYNAMIC_SOURCE_LOCATION_TAGS.has(tag) && hasDynamicText(node))
+    ));
+    if (!tag || !isSourceCandidate
       || start === undefined || end === undefined
       || line === undefined || column === undefined) return;
     const openingEnd = findOpeningTagEnd(source, start, nodeSourceEnd(source, tag, end));

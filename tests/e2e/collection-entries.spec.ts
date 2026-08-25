@@ -3,12 +3,42 @@ import { readFile } from 'node:fs/promises';
 import type { Page } from '@playwright/test';
 
 const createdFile = '.tmp/e2e-site/src/content/articles/created-entry/index.md';
+const articleFile = '.tmp/e2e-site/src/content/articles/example/index.md';
 
 async function openCreateDialog(page: Page) {
   await page.getByRole('button', { name: 'Page editor' }).click();
   await page.getByRole('button', { name: 'Create entry' }).click();
   return page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Create collection entry' });
 }
+
+test('edits article body text and opens frontmatter fields from rendered metadata', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
+      enabled: true, autosave: false, highlights: true,
+    }));
+  });
+  await page.goto('/articles/example');
+
+  const paragraph = page.getByText('This long content-collection paragraph', { exact: false });
+  await paragraph.click();
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  await paragraph.press('End');
+  await paragraph.pressSequentially(' Edited in the article.');
+  const toolbar = page.locator('#astro-wysiwyg-toolbar');
+  await toolbar.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(async () => readFile(articleFile, 'utf8')).toContain('Edited in the article.');
+  await paragraph.press('Escape');
+
+  await page.getByRole('heading', { name: 'Rendered card title' }).click();
+  const dialog = toolbar.getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toBeFocused();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  await page.getByLabel('Article tags').getByText('Astro', { exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'tags' })).toBeFocused();
+});
 
 test('creates, opens, validates, and protects a local content collection entry', async ({ page }) => {
   await page.goto('/');

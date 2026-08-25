@@ -155,33 +155,16 @@ test('keeps toolbar boundaries, state, and focus visible in forced colors', asyn
   expect(await style.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe('none');
 });
 
-test('edits a rendered frontmatter title without leaving edit mode', async ({ page }) => {
-  await page.addInitScript(() => {
-    sessionStorage.setItem('wysiwyg-loads', String(Number(sessionStorage.getItem('wysiwyg-loads') ?? 0) + 1));
-  });
+test('opens the frontmatter editor when rendered metadata is clicked', async ({ page }) => {
   await page.goto('/article');
   const title = page.locator('h1.frontmatter-title');
   await title.click();
-  await expect(title).toHaveAttribute('contenteditable', 'true');
+
   const editor = page.locator('#astro-wysiwyg-toolbar');
-  await expect(editor.getByRole('button', { name: 'Insert' })).toBeDisabled();
-  await expect(editor.getByRole('button', { name: 'Delete block' })).toBeDisabled();
-  await title.press('End');
-  await title.pressSequentially(' updated');
-
-  await expect.poll(async () => readFile(markdownFile, 'utf8')).toContain('title: Markdown editing updated');
-  await page.waitForTimeout(2_000);
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('1');
-
-  await page.reload();
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  expect(await page.evaluate(() => sessionStorage.getItem('wysiwyg-loads'))).toBe('2');
-  await editor.locator('[data-action="add-block"]').evaluate((button) => {
-    (button as HTMLButtonElement).disabled = false;
-    (button as HTMLButtonElement).click();
-  });
-  await expect(editor.getByRole('status')).toHaveText('Frontmatter fields cannot be added or deleted.');
+  const dialog = editor.getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toBeFocused();
+  await expect(title).not.toHaveAttribute('contenteditable', 'true');
 });
 
 test('edits article frontmatter from the Astro dev-toolbar app without selecting content', async ({ page }) => {
@@ -488,14 +471,14 @@ test('keeps a rendered content-collection edit stable through save', async ({ pa
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/cards');
-  const title = page.locator('h2.card-title');
-  await title.click();
+  await page.goto('/articles/example');
+  const paragraph = page.locator('[data-article-version-panel="latest"] > p');
+  await paragraph.click();
   const editor = page.locator('#astro-wysiwyg-toolbar');
   await expect(editor.getByRole('toolbar', { name: 'Edit text' })).toBeVisible();
-  await title.evaluate((element) => {
+  await paragraph.evaluate((element) => {
     element.dataset.saveStabilityIdentity = 'original';
-    element.textContent = 'Stable rendered card title';
+    element.textContent = 'Stable rendered article paragraph';
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
     const range = document.createRange();
     range.selectNodeContents(element);
@@ -511,7 +494,7 @@ test('keeps a rendered content-collection edit stable through save', async ({ pa
     });
   });
   const before = await page.evaluate(() => {
-    const block = document.querySelector<HTMLElement>('h2.card-title')!;
+    const block = document.querySelector<HTMLElement>('[data-article-version-panel="latest"] > p')!;
     const toolbar = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
       ?.querySelector<HTMLElement>('[role="toolbar"]')!;
     const blockRect = block.getBoundingClientRect();
@@ -525,18 +508,18 @@ test('keeps a rendered content-collection edit stable through save', async ({ pa
 
   await editor.getByRole('button', { name: 'Save' }).click();
   await expect(editor.getByRole('status')).toHaveText('Saved');
-  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Stable rendered card title"');
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('Stable rendered article paragraph');
   await page.waitForTimeout(2_500);
 
-  await expect(title).toHaveAttribute('data-save-stability-identity', 'original');
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  await expect(title).toBeFocused();
-  expect(await title.evaluate((element) => getSelection()?.toString())).toBe('Stable rendered card title');
+  await expect(paragraph).toHaveAttribute('data-save-stability-identity', 'original');
+  await expect(paragraph).toHaveAttribute('contenteditable', 'true');
+  await expect(paragraph).toBeFocused();
+  expect(await paragraph.evaluate(() => getSelection()?.toString())).toBe('Stable rendered article paragraph');
   expect(await page.evaluate(() => (
     (window as Window & { __saveStabilityEvents?: string[] }).__saveStabilityEvents ?? []
   ))).toEqual([]);
   expect(await page.evaluate(() => {
-    const block = document.querySelector<HTMLElement>('h2.card-title')!;
+    const block = document.querySelector<HTMLElement>('[data-article-version-panel="latest"] > p')!;
     const toolbar = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot
       ?.querySelector<HTMLElement>('[role="toolbar"]')!;
     const blockRect = block.getBoundingClientRect();
@@ -557,17 +540,17 @@ test('allows a genuine external content change to reload after an editor save', 
     const key = 'astro-wysiwyg-external-reloads';
     sessionStorage.setItem(key, String(Number(sessionStorage.getItem(key) ?? 0) + 1));
   });
-  await page.goto('/cards');
-  const title = page.locator('h2.card-title');
-  await title.click();
-  await title.evaluate((element) => {
+  await page.goto('/articles/example');
+  const paragraph = page.locator('[data-article-version-panel="latest"] > p');
+  await paragraph.click();
+  await paragraph.evaluate((element) => {
     element.textContent = 'Editor save before external change';
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
   });
   const editor = page.locator('#astro-wysiwyg-toolbar');
   await editor.getByRole('button', { name: 'Save' }).click();
   await expect(editor.getByRole('status')).toHaveText('Saved');
-  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Editor save before external change"');
+  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('Editor save before external change');
   const loadsBeforeExternalWrite = Number(await page.evaluate(() => (
     sessionStorage.getItem('astro-wysiwyg-external-reloads')
   )));
@@ -575,15 +558,15 @@ test('allows a genuine external content change to reload after an editor save', 
 
   const editorSource = await readFile(cardFile, 'utf8');
   await writeFile(cardFile, editorSource.replace(
-    'title: "Editor save before external change"',
-    'title: "External content change"',
+    'Editor save before external change',
+    'External content change',
   ));
 
   await expect.poll(async () => Number(await page.evaluate(() => (
     sessionStorage.getItem('astro-wysiwyg-external-reloads')
   )))).toBeGreaterThan(loadsBeforeExternalWrite);
   await expect.poll(async () => {
-    const token = await title.getAttribute('data-astro-wysiwyg');
+    const token = await paragraph.getAttribute('data-astro-wysiwyg');
     if (!token) return '';
     return (JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as { original?: string }).original ?? '';
   }).toContain('External content change');
@@ -1124,6 +1107,7 @@ test('cancels and recovers Astro video replacements without deleting assets', as
   await dialog.getByRole('button', { name: 'Upload video' }).click();
   await expect(dialog.getByRole('alert')).toContainText('Uploaded to /assets/replacement-upload.mp4');
   await expect.poll(async () => readFile(replacementVideoFile).then(() => true)).toBe(true);
+  await expect(dialog.getByRole('button', { name: 'Replace video' })).toBeEnabled();
   await page.route('**/_astro-wysiwyg/save', async (route) => {
     await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
   });
@@ -2393,12 +2377,13 @@ test('edits rendered card frontmatter through its article link', async ({ page }
   await page.goto('/cards');
   const title = page.locator('h2.card-title');
   await title.click();
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  await title.press('Control+a');
-  await title.pressSequentially('Edited rendered card');
+  const dialog = page.locator('#astro-wysiwyg-toolbar').getByRole('dialog', { name: 'Edit frontmatter' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: 'title' })).toBeFocused();
+  await expect(title).not.toHaveAttribute('contenteditable', 'true');
+  await dialog.getByRole('textbox', { name: 'title' }).fill('Edited rendered card');
+  await dialog.getByRole('button', { name: 'Save frontmatter' }).click();
   await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Edited rendered card"');
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  await page.waitForTimeout(2_500);
 });
 
 test('adds and edits a Markdown hyperlink from the toolbar', async ({ page }) => {
@@ -2713,20 +2698,6 @@ test('undoes a saved wrapped-paragraph edit without an Astro reload or repeat wr
 
   await page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Undo' }).click();
 
-  await expect.poll(async () => readFile(cardFile, 'utf8')).toBe(before);
-});
-
-test('undoes a saved card edit without an Astro reload', async ({ page }) => {
-  const before = await readFile(cardFile, 'utf8');
-  await page.goto('/cards');
-  const title = page.locator('h2.card-title');
-  await title.click();
-  await expect(title).toHaveAttribute('contenteditable', 'true');
-  await title.press('Control+a');
-  await title.pressSequentially('Undo candidate');
-  await expect.poll(async () => readFile(cardFile, 'utf8')).toContain('title: "Undo candidate"');
-  await page.waitForTimeout(2_500);
-  await page.locator('#astro-wysiwyg-toolbar').getByRole('button', { name: 'Undo' }).click();
   await expect.poll(async () => readFile(cardFile, 'utf8')).toBe(before);
 });
 

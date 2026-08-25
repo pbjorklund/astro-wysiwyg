@@ -8,6 +8,7 @@ export interface SourceMarker {
   original: string;
   format: EditableFormat;
   tag: string;
+  field?: string;
 }
 
 export function createMarker(
@@ -54,5 +55,6 @@ function isSourceMarker(value: unknown): value is SourceMarker {
     && Number(marker.end) >= Number(marker.start)
     && typeof marker.original === 'string'
     && (marker.format === 'astro' || marker.format === 'frontmatter' || marker.format === 'markdown')
-    && typeof marker.tag === 'string';
+    && typeof marker.tag === 'string'
+    && (marker.field === undefined || typeof marker.field === 'string');
 }

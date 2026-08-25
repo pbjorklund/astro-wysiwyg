@@ -13,6 +13,9 @@ const { Content } = await render(article);
 <BaseLayout title={article.data.title}>
   <article>
     <h1>{article.data.title}</h1>
+    <div aria-label="Article tags">
+      {(article.data.tags ?? []).map((tag) => <span>{tag}</span>)}
+    </div>
     <div data-article-version-panel="latest"><Content /></div>
   </article>
 </BaseLayout>

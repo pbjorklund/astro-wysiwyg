@@ -89,11 +89,13 @@ const SOURCE_SELECTOR = [
   ...EDITABLE_BLOCK_TAGS.map((tag) => `${tag}[data-wysiwyg-source-file][data-wysiwyg-source-loc]`),
   'figure[data-wysiwyg-source-file][data-wysiwyg-source-loc]',
   'iframe[data-wysiwyg-source-file][data-wysiwyg-source-loc]',
+  'span[data-wysiwyg-source-file][data-wysiwyg-source-loc]',
 ].join(',');
 const ASTRO_SOURCE_SELECTOR = [
   ...EDITABLE_BLOCK_TAGS.map((tag) => `${tag}[data-astro-source-file][data-astro-source-loc]`),
   'figure[data-astro-source-file][data-astro-source-loc]',
   'iframe[data-astro-source-file][data-astro-source-loc]',
+  'span[data-astro-source-file][data-astro-source-loc]',
 ].join(',');
 const EDITABLE_SELECTOR = `[${MARKER_ATTRIBUTE}],${SOURCE_SELECTOR}`;
 const PREPARE_SELECTOR = `${EDITABLE_SELECTOR},${ASTRO_SOURCE_SELECTOR}`;
@@ -487,6 +489,12 @@ export function startEditor(options: EditorOptions): void {
         showNonEditableNotice(resolved);
         return undefined;
       }
+    }
+    const token = block.getAttribute(MARKER_ATTRIBUTE);
+    const marker = decodeClientMarker(token);
+    if (token && marker?.format === 'frontmatter') {
+      await openFrontmatterEditor(undefined, token, marker.field);
+      return undefined;
     }
     setRovingTabStop(block);
     if (active === block) return active;
@@ -2620,9 +2628,13 @@ export function startEditor(options: EditorOptions): void {
     }
   }
 
-  async function openFrontmatterEditor(draft?: FrontmatterDraft): Promise<void> {
+  async function openFrontmatterEditor(
+    draft?: FrontmatterDraft,
+    contextMarker?: string,
+    preferredField?: string,
+  ): Promise<void> {
     if (isLinkEditorOpen()) closeLinkEditor();
-    const marker = draft?.contextMarker ?? findFrontmatterContextMarker();
+    const marker = draft?.contextMarker ?? contextMarker ?? findFrontmatterContextMarker();
     const editor = shadow.querySelector<HTMLDialogElement>('.frontmatter-editor');
     const fields = shadow.querySelector<HTMLElement>('.frontmatter-fields');
     /* istanbul ignore next -- These controls are static frontmatter-editor markup. */
@@ -2655,7 +2667,12 @@ export function startEditor(options: EditorOptions): void {
         /* istanbul ignore next -- Empty field collections are a valid endpoint fallback. */
         setFrontmatterMessage(frontmatterFields.length ? '' : 'No simple frontmatter fields were found.');
       }
-      fields.querySelector<HTMLInputElement>('input')?.focus();
+      const preferredInput = preferredField
+        ? fields.querySelector<HTMLInputElement>(
+          `[data-frontmatter-field="${CSS.escape(preferredField)}"]`,
+        )
+        : undefined;
+      (preferredInput ?? fields.querySelector<HTMLInputElement>('input'))?.focus();
     } catch (error) {
       /* istanbul ignore next -- Fetch and response failures are Error instances in browsers. */
       setFrontmatterMessage(error instanceof Error ? error.message : 'Frontmatter could not be loaded.');
@@ -3245,6 +3262,7 @@ function decodeClientMarker(token: string | null): {
   start: number;
   format: 'astro' | 'frontmatter' | 'markdown';
   original?: string;
+  field?: string;
 } | undefined {
   if (!token) return undefined;
   try {
@@ -3258,6 +3276,7 @@ function decodeClientMarker(token: string | null): {
       start: value.start,
       format: value.format,
       original: typeof value.original === 'string' ? value.original : undefined,
+      field: typeof value.field === 'string' ? value.field : undefined,
     };
   } catch {
     return undefined;

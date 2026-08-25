@@ -1,6 +1,6 @@
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { decodeMarker } from './marker.ts';
+import { createMarker, decodeMarker, encodeMarker } from './marker.ts';
 import { isInsideProjectRoot } from './project-path.ts';
 import { mutateTextFile } from './source-file.ts';
 
@@ -40,6 +40,41 @@ export async function readFrontmatterFields(
 ): Promise<FrontmatterField[]> {
   const { source } = await readContextSource(root, contextMarker, writableRoot);
   return parseFrontmatter(source).map(({ name, type, value, original }) => ({ name, type, value, original }));
+}
+
+export async function resolveRenderedFrontmatterMarker(
+  root: string,
+  contextMarker: string,
+  renderedText: string,
+  fieldName?: string,
+  tag = 'span',
+  writableRoot = root,
+): Promise<string> {
+  const context = decodeMarker(contextMarker);
+  const { source } = await readContextSource(root, contextMarker, writableRoot);
+  if (!source.startsWith('---') || source.indexOf('\n---', 3) < 0) {
+    throw new FrontmatterEditError('The current content file has no editable frontmatter.', 400);
+  }
+  const fields = parseFrontmatter(source);
+  const candidates = fieldName
+    ? fields.filter((field) => field.name === fieldName)
+    : fields;
+  if (fieldName && candidates.length === 0) {
+    throw new FrontmatterEditError(`The ${fieldName} frontmatter field was not found.`, 400);
+  }
+  const matches = candidates.filter((field) => frontmatterFieldContains(field, renderedText));
+  if (matches.length === 0) {
+    const subject = fieldName ? `The rendered ${fieldName}` : 'This rendered text';
+    throw new FrontmatterEditError(`${subject} does not match the current content file.`, 400);
+  }
+  if (matches.length > 1) {
+    throw new FrontmatterEditError('More than one frontmatter field matches this rendered text.', 400);
+  }
+  const field = matches[0];
+  return encodeMarker({
+    ...createMarker(context.file, field.start, field.end, field.original, 'frontmatter', tag),
+    field: field.name,
+  });
 }
 
 export async function updateFrontmatterFields(
@@ -129,6 +164,14 @@ function parseFrontmatter(source: string): ParsedField[] {
     });
   }
   return fields;
+}
+
+function frontmatterFieldContains(field: ParsedField, renderedText: string): boolean {
+  const value = renderedText.trim();
+  if (field.type === 'list') {
+    return String(field.value).split(', ').includes(value);
+  }
+  return String(field.value).trim() === value;
 }
 
 function parseValue(original: string): Pick<FrontmatterField, 'type' | 'value'> | undefined {

@@ -54,6 +54,7 @@ test('rejects malformed and invalid editor markers', () => {
     { ...valid, original: 1 },
     { ...valid, format: 'html' },
     { ...valid, tag: 1 },
+    { ...valid, field: 1 },
   ];
   for (const marker of invalid) {
     const token = Buffer.from(JSON.stringify(marker)).toString('base64url');

@@ -18,7 +18,7 @@ function markerFromHtml(html: string): string {
 }
 
 test('adds Astro 7 source locations to static and dynamic editable tags', async () => {
-  const source = '<main>\n  <h1>Static</h1>\n  <p>{dynamic}</p>\n  <hr />\n</main>';
+  const source = '<main>\n  <h1>Static</h1>\n  <p>{dynamic}</p>\n  <span>{tag}</span>\n  <span>Static label</span>\n  <hr />\n</main>';
   const transformed = await annotateAstroSourceLocations(
     source,
     '/project/src/pages/index.astro',
@@ -35,7 +35,12 @@ test('adds Astro 7 source locations to static and dynamic editable tags', async 
   );
   assert.match(
     transformed ?? '',
-    /<hr data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="4:3" \/>/,
+    /<span data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="4:3">\{tag\}<\/span>/,
+  );
+  assert.match(transformed ?? '', /<span>Static label<\/span>/);
+  assert.match(
+    transformed ?? '',
+    /<hr data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="6:3" \/>/,
   );
   assert.match(
     await annotateAstroSourceLocations('<hr/>', '/project/divider.astro', '/project') ?? '',
@@ -177,6 +182,39 @@ test('resolves a dynamic data title through the current content marker', async (
   assert.equal(marker.file, 'src/content/articles/post.md');
   assert.equal(marker.format, 'frontmatter');
   assert.equal(marker.original, '"Current title"');
+});
+
+test('resolves destructured article fields and list items through the current content marker', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-values-'));
+  const pageFile = path.join(root, 'src/layouts/ArticleLayout.astro');
+  const contentFile = path.join(root, 'src/content/articles/post.md');
+  await Promise.all([
+    mkdir(path.dirname(pageFile), { recursive: true }),
+    mkdir(path.dirname(contentFile), { recursive: true }),
+  ]);
+  await writeFile(pageFile, '<h1>{title}</h1><div>{tags.map((tag) => <span>{tag}</span>)}</div>');
+  const content = '---\ntitle: "Current title"\ntags: ["Policy", "ISO"]\n---\nBody text\n';
+  await writeFile(contentFile, content);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bodyStart = content.indexOf('Body text');
+  const context = encodeMarker(createMarker(
+    'src/content/articles/post.md', bodyStart, bodyStart + 9, 'Body text', 'markdown', 'p',
+  ));
+
+  const title = decodeMarker(await resolveAstroSourceMarker(root, pageFile, '1:8', {
+    contextMarker: context,
+    renderedText: 'Current title',
+  }));
+  assert.equal(title.format, 'frontmatter');
+  assert.equal(title.field, 'title');
+
+  const tag = decodeMarker(await resolveAstroSourceMarker(root, pageFile, '1:53', {
+    contextMarker: context,
+    renderedText: 'Policy',
+  }));
+  assert.equal(tag.format, 'frontmatter');
+  assert.equal(tag.field, 'tags');
+  assert.equal(tag.original, '["Policy", "ISO"]');
 });
 
 test('resolves a rendered article card through its linked content slug', async (t) => {
