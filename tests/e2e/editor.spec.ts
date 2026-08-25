@@ -350,6 +350,15 @@ test('discards frontmatter drafts on cancel and tolerates unavailable session st
 });
 
 test('keeps layout, focus, selection, scroll, and session stable through manual save and autosave', async ({ page }) => {
+  let delayManualSave = true;
+  await page.route('**/_astro-wysiwyg/save', async (route) => {
+    const body = route.request().postDataJSON() as { html?: string };
+    if (delayManualSave && body.html?.includes('Stable selection through repeated saves.')) {
+      delayManualSave = false;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    await route.continue();
+  });
   await page.addInitScript(() => {
     localStorage.setItem('astro-wysiwyg-preferences', JSON.stringify({
       enabled: true, autosave: false, highlights: true,

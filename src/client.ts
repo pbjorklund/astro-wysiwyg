@@ -3318,7 +3318,7 @@ export function toolbarMarkup(): string {
       button:hover { background: #334155; }
       button[aria-pressed="true"], button[aria-expanded="true"] { background: #0f766e; border-color: #5eead4; }
       [data-action="save"] {
-        min-width: 92px; box-shadow: 0 2px 0 #020617;
+        width: 96px; box-shadow: 0 2px 0 #020617;
         transition: transform 80ms ease, background-color 120ms ease, border-color 120ms ease;
       }
       [data-action="save"]:active:not(:disabled), [data-action="save"][data-state="saving"] {
