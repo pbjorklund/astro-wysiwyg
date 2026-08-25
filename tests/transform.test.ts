@@ -217,6 +217,33 @@ test('resolves destructured article fields and list items through the current co
   assert.equal(tag.original, '["Policy", "ISO"]');
 });
 
+test('rejects missing and ambiguous rendered frontmatter matches', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-frontmatter-ambiguity-'));
+  const pageFile = path.join(root, 'src/layouts/ArticleLayout.astro');
+  const contentFile = path.join(root, 'src/content/articles/post.md');
+  await Promise.all([
+    mkdir(path.dirname(pageFile), { recursive: true }),
+    mkdir(path.dirname(contentFile), { recursive: true }),
+  ]);
+  await writeFile(pageFile, '<h1>{title}</h1>');
+  const content = '---\ntitle: "Same value"\ndescription: "Same value"\n---\nBody text\n';
+  await writeFile(contentFile, content);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bodyStart = content.indexOf('Body text');
+  const context = encodeMarker(createMarker(
+    'src/content/articles/post.md', bodyStart, bodyStart + 9, 'Body text', 'markdown', 'p',
+  ));
+
+  await assert.rejects(resolveAstroSourceMarker(root, pageFile, '1:8', {
+    contextMarker: context,
+    renderedText: 'Missing value',
+  }), /This rendered text does not match/);
+  await assert.rejects(resolveAstroSourceMarker(root, pageFile, '1:8', {
+    contextMarker: context,
+    renderedText: 'Same value',
+  }), /More than one frontmatter field matches/);
+});
+
 test('resolves a rendered article card through its linked content slug', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-card-'));
   const pageFile = path.join(root, 'src/components/Card.astro');
