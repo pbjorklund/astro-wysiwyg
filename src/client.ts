@@ -194,14 +194,23 @@ export function startEditor(options: EditorOptions): void {
     html[data-astro-wysiwyg-highlights] :is(${EDITABLE_SELECTOR}):focus-visible,
     [${ACTIVE_ATTRIBUTE}] { outline: 2px solid Highlight !important; outline-offset: 3px; }
     [data-astro-wysiwyg-notice] {
-      position: relative; z-index: 9999; box-sizing: border-box; display: block;
-      max-width: calc(100vw - 32px); margin: 0 0 8px; padding: 12px 16px;
+      position: fixed; top: 16px; right: 16px; z-index: 2147483647; box-sizing: border-box;
+      display: flex; width: max-content; max-width: min(420px, calc(100vw - 32px));
+      align-items: flex-start; gap: 12px; margin: 0; padding: 12px;
       color: #fef3c7; background: #78350f; border: 2px solid #f59e0b; border-radius: 6px;
-      font: 600 15px/1.4 ui-sans-serif, system-ui, sans-serif; cursor: pointer;
+      font: 600 15px/1.4 ui-sans-serif, system-ui, sans-serif;
       box-shadow: 0 4px 12px rgb(0 0 0 / 30%); animation: wysiwyg-notice-in 0.2s ease-out;
     }
-    [data-astro-wysiwyg-notice]:hover { background: #92400e; }
+    [data-astro-wysiwyg-notice] > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+    [data-astro-wysiwyg-notice] > button {
+      flex: 0 0 auto; min-width: 44px; min-height: 44px; margin: -6px; padding: 6px 8px;
+      color: #fef3c7; background: transparent; border: 1px solid transparent; border-radius: 4px;
+      font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif; cursor: pointer;
+    }
+    [data-astro-wysiwyg-notice] > button:hover { background: #92400e; border-color: #f59e0b; }
+    [data-astro-wysiwyg-notice] > button:focus-visible { outline: 3px solid #7dd3fc; outline-offset: 2px; }
     @keyframes wysiwyg-notice-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { [data-astro-wysiwyg-notice] { animation: none; } }
   `;
   document.head.append(globalStyle);
   applyPreferences(preferences);
@@ -425,17 +434,24 @@ export function startEditor(options: EditorOptions): void {
     delete element.dataset.wysiwygAddedDescription;
   }
 
-  function showNonEditableNotice(element: HTMLElement, message: string): void {
+  function showNonEditableNotice(message: string): void {
+    for (const existing of document.querySelectorAll('[data-astro-wysiwyg-notice]')) existing.remove();
     const notice = document.createElement('div');
     notice.dataset.astroWysiwygNotice = '';
     notice.setAttribute('role', 'alert');
-    notice.textContent = `Not editable: ${message}`;
-    element.before(notice);
+    notice.setAttribute('aria-atomic', 'true');
+    const text = document.createElement('span');
+    text.textContent = `Not editable: ${message}`;
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.textContent = 'Dismiss';
+    notice.append(text, dismiss);
+    document.body.append(notice);
     setStatus(message, true);
-    /* istanbul ignore next -- The timeout and click-dismiss callbacks are tested visually. */
+    /* istanbul ignore next -- The timeout callback is tested visually. */
     const clear = () => { notice.remove(); };
     setTimeout(clear, 5000);
-    notice.addEventListener('click', clear);
+    dismiss.addEventListener('click', clear);
   }
 
   function onDocumentClick(event: MouseEvent): void {
@@ -468,7 +484,7 @@ export function startEditor(options: EditorOptions): void {
     if (!block.hasAttribute(MARKER_ATTRIBUTE)) {
       const resolved = await resolveSourceMarker(block);
       if (resolved !== true) {
-        showNonEditableNotice(block, resolved);
+        showNonEditableNotice(resolved);
         return undefined;
       }
     }
@@ -3193,8 +3209,12 @@ export function startEditor(options: EditorOptions): void {
     const saving = message === 'Saving...';
     /* istanbul ignore else -- Save is static toolbar markup. */
     if (save) {
-      save.dataset.saving = String(saving);
+      const state = error ? 'error' : saving ? 'saving' : message === 'Saved' ? 'saved' : 'idle';
+      save.dataset.state = state;
       save.setAttribute('aria-busy', String(saving));
+      const label = save.querySelector<HTMLElement>('[data-save-label]');
+      /* istanbul ignore else -- Save label is static toolbar markup. */
+      if (label) label.textContent = saving ? 'Saving' : state === 'saved' ? 'Saved' : 'Save';
     }
   }
 }
@@ -3297,6 +3317,17 @@ export function toolbarMarkup(): string {
       button.icon-only { width: 44px; padding: 8px; }
       button:hover { background: #334155; }
       button[aria-pressed="true"], button[aria-expanded="true"] { background: #0f766e; border-color: #5eead4; }
+      [data-action="save"] {
+        min-width: 92px; box-shadow: 0 2px 0 #020617;
+        transition: transform 80ms ease, background-color 120ms ease, border-color 120ms ease;
+      }
+      [data-action="save"]:active:not(:disabled), [data-action="save"][data-state="saving"] {
+        transform: translateY(2px); box-shadow: none;
+      }
+      [data-action="save"][data-state="saving"] { color: #dbeafe; background: #1e3a8a; border-color: #93c5fd; }
+      [data-action="save"][data-state="saved"] { color: #dcfce7; background: #166534; border-color: #86efac; }
+      [data-action="save"][data-state="saved"]:hover { background: #15803d; }
+      @media (prefers-reduced-motion: reduce) { [data-action="save"] { transition: none; } }
       button.danger { color: #fecaca; border: 2px solid #ef4444; border-radius: 3px; }
       button.danger:hover { background: #7f1d1d; }
       button:disabled { opacity: .5; text-decoration: line-through; cursor: not-allowed; }
@@ -3409,7 +3440,7 @@ export function toolbarMarkup(): string {
           <button type="button" class="danger" data-toolbar-item data-action="delete-block" aria-label="Delete block">${lucideIcon('trash-2')}<span>Delete</span></button>
         </div>
         <div class="toolbar-group session" role="group" aria-label="Session">
-          <button type="button" data-toolbar-item data-action="save" data-tooltip="Save (Ctrl/Cmd+S)" data-tooltip-owner="save" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+S Meta+S" aria-busy="false">${lucideIcon('save')}<span>Save</span></button>
+          <button type="button" data-toolbar-item data-action="save" data-state="idle" data-tooltip="Save (Ctrl/Cmd+S)" data-tooltip-owner="save" aria-label="Save" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Control+S Meta+S" aria-busy="false">${lucideIcon('save')}<span data-save-label>Save</span></button>
           <button type="button" data-toolbar-item data-action="done" data-tooltip="Done (Esc)" data-tooltip-owner="done" aria-describedby="toolbar-tooltip" aria-keyshortcuts="Escape">${lucideIcon('check')}<span>Done</span></button>
         </div>
       </div>

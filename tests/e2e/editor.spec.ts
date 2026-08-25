@@ -412,12 +412,21 @@ test('keeps layout, focus, selection, scroll, and session stable through manual 
   });
   const before = await snapshot();
   const save = editor.getByRole('button', { name: 'Save' });
-  await save.click();
+  const restingSaveBounds = await save.boundingBox();
+  expect(restingSaveBounds).not.toBeNull();
+  await save.hover();
+  await page.mouse.down();
+  await expect.poll(async () => (await save.boundingBox())!.y).toBeGreaterThan(restingSaveBounds!.y);
+  await page.mouse.up();
   await expect(status).toHaveText('Saving...');
+  await expect(save).toHaveAttribute('data-state', 'saving');
+  await expect(save.locator('[data-save-label]')).toHaveText('Saving');
   await save.click();
   await expect.poll(async () => readFile('.tmp/e2e-site/src/pages/keyboard.md', 'utf8'))
     .toContain('Stable selection through repeated saves.');
   await expect(status).toHaveText('Saved');
+  await expect(save).toHaveAttribute('data-state', 'saved');
+  await expect(save.locator('[data-save-label]')).toHaveText('Saved');
   await page.waitForTimeout(1_000);
 
   expect(await snapshot()).toEqual(before);
@@ -2347,15 +2356,28 @@ test('maps marked list items back to their editable parent list', async ({ page 
   await expect(list).toHaveAttribute('contenteditable', 'true');
 });
 
-test('leaves dynamic Astro expressions uneditable and shows a notice', async ({ page }) => {
+test('leaves dynamic Astro expressions uneditable and shows one dismissible toast without shifting content', async ({ page }) => {
   await page.goto('/');
   const dynamic = page.locator('p').filter({ hasText: 'Dynamic text' });
   await expect(dynamic).not.toHaveAttribute('data-astro-wysiwyg', /.+/);
+  const before = await dynamic.boundingBox();
   await dynamic.click();
   await expect(dynamic).not.toHaveAttribute('contenteditable', 'true');
   const notice = page.locator('[data-astro-wysiwyg-notice]');
   await expect(notice).toBeVisible();
   await expect(notice).toContainText('Not editable');
+  expect(await dynamic.boundingBox()).toEqual(before);
+
+  await notice.evaluate((element) => { element.setAttribute('data-test-original-notice', ''); });
+  await dynamic.click();
+  await expect(page.locator('[data-test-original-notice]')).toHaveCount(0);
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toBeVisible();
+  const noticeBounds = await notice.boundingBox();
+  expect(noticeBounds).not.toBeNull();
+  expect(noticeBounds!.x + noticeBounds!.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth - 16));
+  await notice.getByRole('button', { name: 'Dismiss' }).click();
+  await expect(notice).toHaveCount(0);
 });
 
 test('edits rendered card frontmatter through its article link', async ({ page }) => {
