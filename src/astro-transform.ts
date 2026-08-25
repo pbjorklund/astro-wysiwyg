@@ -9,6 +9,7 @@ import { inspectSourceIframe } from './iframe-markup.ts';
 import { SourceEditError } from './persist.ts';
 
 const BLOCK_TAGS = new Set(EDITABLE_BLOCK_TAGS);
+const SOURCE_LOCATION_TAGS = new Set([...EDITABLE_BLOCK_TAGS, 'figure', 'iframe']);
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'br', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'i',
   'img', 'ins', 'kbd', 'li', 'mark', 'p', 'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
@@ -41,7 +42,7 @@ function compilerOffset(source: string, offset: number | undefined): number | un
 }
 
 interface Position {
-  start?: { offset?: number };
+  start?: { offset?: number; line?: number; column?: number };
   end?: { offset?: number };
 }
 
@@ -240,6 +241,49 @@ function parseYamlScalar(value: string): string {
   }
   if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/''/g, "'");
   return value;
+}
+
+export async function annotateAstroSourceLocations(
+  source: string,
+  id: string,
+  root: string,
+): Promise<string | null> {
+  const cleanId = id.split('?', 1)[0];
+  const relative = path.relative(root, cleanId);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+
+  const result = await parse(source, { position: true });
+  const insertions: Insertion[] = [];
+  visit(result.ast as AstroNode, (node) => {
+    const tag = node.name?.toLowerCase();
+    const start = compilerOffset(source, node.position?.start?.offset);
+    const end = compilerOffset(source, node.position?.end?.offset);
+    const line = node.position?.start?.line;
+    const column = node.position?.start?.column;
+    if (!tag || !SOURCE_LOCATION_TAGS.has(tag)
+      || start === undefined || end === undefined
+      || line === undefined || column === undefined) return;
+    const openingEnd = findOpeningTagEnd(source, start, nodeSourceEnd(source, tag, end));
+    if (openingEnd < 0) return;
+    const file = relative.split(path.sep).join('/')
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;');
+    let insertionOffset = openingEnd;
+    if (source[insertionOffset - 1] === '/') {
+      insertionOffset -= 1;
+      while (/\s/.test(source[insertionOffset - 1] ?? '')) insertionOffset -= 1;
+    }
+    insertions.push({
+      offset: insertionOffset,
+      value: ` data-astro-source-file="${file}" data-astro-source-loc="${line}:${column}"`,
+    });
+  });
+  if (insertions.length === 0) return null;
+  let transformed = source;
+  for (const insertion of insertions.sort((left, right) => right.offset - left.offset)) {
+    transformed = transformed.slice(0, insertion.offset) + insertion.value + transformed.slice(insertion.offset);
+  }
+  return transformed;
 }
 
 export async function annotateAstroSource(

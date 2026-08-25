@@ -13,6 +13,7 @@ if (!tarballArgument || !astroVersion) {
 const tarball = path.resolve(tarballArgument);
 const root = await mkdtemp(path.join(tmpdir(), 'astro-wysiwyg-compatibility-'));
 const pageFile = path.join(root, 'src/pages/index.astro');
+const markdownFile = path.join(root, 'src/pages/markdown.md');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 let server;
 
@@ -34,10 +35,13 @@ import wysiwyg from 'astro-wysiwyg';
 export default defineConfig({ integrations: [wysiwyg()] });
 `),
     writeFile(pageFile, '<p>Compatibility smoke</p>\n'),
+    writeFile(markdownFile, '# Markdown compatibility\n'),
   ]);
 
   await run(npm, ['install', '--no-audit', '--no-fund'], root);
-  const astroCli = path.join(root, 'node_modules/astro/astro.js');
+  const astroPackageRoot = path.join(root, 'node_modules/astro');
+  const astroPackage = JSON.parse(await readFile(path.join(astroPackageRoot, 'package.json'), 'utf8'));
+  const astroCli = path.join(astroPackageRoot, astroPackage.bin.astro);
   server = spawn(process.execPath, [
     astroCli, 'dev', '--host', '127.0.0.1', '--port', '4329',
   ], {
@@ -50,7 +54,13 @@ export default defineConfig({ integrations: [wysiwyg()] });
 
   const pageResponse = await fetch('http://127.0.0.1:4329/');
   assert.equal(pageResponse.status, 200);
-  assert.match(await pageResponse.text(), /Compatibility smoke/);
+  const pageHtml = await pageResponse.text();
+  assert.match(pageHtml, /Compatibility smoke/);
+  assert.match(pageHtml, /data-astro-source-file=/);
+
+  const markdownResponse = await fetch('http://127.0.0.1:4329/markdown');
+  assert.equal(markdownResponse.status, 200);
+  assert.match(await markdownResponse.text(), /<h1 data-astro-wysiwyg=/);
 
   const resolved = await post({
     sourceFile: pageFile,

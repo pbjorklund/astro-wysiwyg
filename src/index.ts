@@ -1,10 +1,12 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import type { AstroConfig, AstroIntegration } from 'astro';
+import { unified } from '@astrojs/markdown-remark';
 import type { Plugin, ViteDevServer } from 'vite';
-import { resolveAstroSourceMarker } from './astro-transform.ts';
+import { annotateAstroSourceLocations, resolveAstroSourceMarker } from './astro-transform.ts';
 import { ExpectedTextFileWrites } from './expected-writes.ts';
 import {
   DEFAULT_IMAGE_MAX_BYTES,
@@ -89,7 +91,8 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
         publicRoot = fileURLToPath(config.publicDir ?? new URL('./public/', config.root));
         sourceRoot = fileURLToPath(config.srcDir);
         editorWrites.setContentRoot(path.join(sourceRoot, 'content'));
-        const processor = getMarkdownProcessor(config.markdown);
+        const processor = getMarkdownProcessor(config.markdown)
+          ?? (config.markdown?.processor?.name === 'satteri' ? unified() : undefined);
         if (processor) addMarkdownPlugins(processor, projectRoot);
         updateConfig({
           markdown: processor
@@ -98,7 +101,12 @@ export default function wysiwyg(options: WysiwygOptions = {}): AstroIntegration 
               remarkPlugins: [[remarkEditableMedia, { root: projectRoot }]],
               rehypePlugins: [[rehypeEditableBlocks, { root: projectRoot }]],
             },
-          vite: { plugins: [editorWrites.plugin] },
+          vite: {
+            plugins: [
+              ...(astroMajorVersion() >= 7 ? [createAstroSourceAnnotationPlugin(projectRoot)] : []),
+              editorWrites.plugin,
+            ],
+          },
         });
         injectScript(
           'page',
@@ -382,6 +390,29 @@ function registerSaveEndpoint(
       return sendJson(response, 500, { error: 'The editor request could not be completed.' });
     }
   });
+}
+
+function astroMajorVersion(): number {
+  const require = createRequire(import.meta.url);
+  const packagePath = require.resolve('astro/package.json');
+  const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: string };
+  return Number.parseInt(packageJson.version?.split('.', 1)[0] ?? '0', 10);
+}
+
+function createAstroSourceAnnotationPlugin(root: string): Plugin {
+  return {
+    name: 'astro-wysiwyg:source-annotations',
+    enforce: 'pre',
+    transform: {
+      order: 'pre',
+      async handler(source, id) {
+        const file = id.split('?', 1)[0];
+        if (path.extname(file).toLowerCase() !== '.astro' || id.includes('?astro&type=')) return;
+        const code = await annotateAstroSourceLocations(source, id, root);
+        return code ? { code, map: null } : undefined;
+      },
+    },
+  };
 }
 
 function createEditorWriteHotUpdateFilter(): {

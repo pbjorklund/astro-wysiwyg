@@ -26,6 +26,15 @@ jobs:
   compatibility:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      matrix:
+        include:
+          - astro: 5.0.0
+            node: 18.17.1
+          - astro: 6.4.8
+            node: 22
+          - astro: 7.2.2
+            node: 24
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,8 +46,8 @@ jobs:
       - run: mkdir -p .tmp/package && npm pack --ignore-scripts --pack-destination .tmp/package
       - uses: actions/setup-node@v7
         with:
-          node-version: 18.17.1
-      - run: node tests/compatibility.mjs .tmp/package/astro-wysiwyg-*.tgz 5.0.0
+          node-version: ${{ matrix.node }}
+      - run: node tests/compatibility.mjs .tmp/package/astro-wysiwyg-*.tgz ${{ matrix.astro }}
 
   browser:
     runs-on: ubuntu-latest

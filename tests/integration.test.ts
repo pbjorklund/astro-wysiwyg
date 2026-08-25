@@ -1113,8 +1113,36 @@ test('reuses a configured unified Markdown processor', async () => {
   assert.equal(configured.markdown.processor, processor);
   assert.deepEqual(
     configured.vite.plugins.map(({ name, enforce }) => ({ name, enforce })),
-    [{ name: 'astro-wysiwyg:quiet-editor-writes', enforce: 'pre' }],
+    [
+      { name: 'astro-wysiwyg:source-annotations', enforce: 'pre' },
+      { name: 'astro-wysiwyg:quiet-editor-writes', enforce: 'pre' },
+    ],
   );
+});
+
+test('uses a unified development processor when Astro provides Satteri', async () => {
+  const integration = wysiwyg();
+  let update: unknown;
+  await integration.hooks['astro:config:setup']?.({
+    command: 'dev',
+    config: {
+      root: new URL('file:///project/'),
+      srcDir: new URL('file:///project/src/'),
+      markdown: { processor: { name: 'satteri', options: {} } },
+    },
+    updateConfig: (value: unknown) => { update = value; return value; },
+    injectScript: () => undefined,
+    addDevToolbarApp: () => undefined,
+  } as never);
+
+  const configured = update as {
+    markdown: {
+      processor: { name: string; options: { remarkPlugins: unknown[]; rehypePlugins: unknown[] } };
+    };
+  };
+  assert.equal(configured.markdown.processor.name, 'unified');
+  assert.equal(configured.markdown.processor.options.remarkPlugins.length, 1);
+  assert.equal(configured.markdown.processor.options.rehypePlugins.length, 1);
 });
 
 test('falls back when a configured Markdown processor cannot accept rehype plugins', async () => {

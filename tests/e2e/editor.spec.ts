@@ -1656,7 +1656,7 @@ test('switches blocks after saving the pending manual edit', async ({ page }) =>
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/resilience/guards');
+  await page.goto('/resilience/guards', { waitUntil: 'networkidle' });
   const paragraphs = page.locator('main > p');
   const first = paragraphs.first();
   const second = paragraphs.nth(1);
@@ -1687,7 +1687,7 @@ test('keeps the previous block recoverable when switching blocks cannot save', a
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/resilience/guards');
+  await page.goto('/resilience/guards', { waitUntil: 'networkidle' });
   const paragraphs = page.locator('main > p');
   const first = paragraphs.first();
   const second = paragraphs.nth(1);
@@ -2166,8 +2166,9 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
       enabled: true, autosave: false, highlights: true,
     }));
   });
-  await page.goto('/resilience/guards');
+  await page.goto('/resilience/guards', { waitUntil: 'networkidle' });
   const editor = page.locator('#astro-wysiwyg-toolbar');
+  await expect(editor).toBeAttached();
   await page.evaluate(() => {
     dispatchEvent(new Event('scroll'));
     const shadow = document.querySelector('#astro-wysiwyg-toolbar')?.shadowRoot;
@@ -2278,7 +2279,7 @@ test('exercises guarded toolbar, link, marker-resolution, and finish paths', asy
 });
 
 test('rejects failed and aborted dynamic source-marker lookups', async ({ page }) => {
-  await page.goto('/resilience/guards');
+  await page.goto('/resilience/guards', { waitUntil: 'networkidle' });
   const blocks = page.locator('main > p');
   await blocks.evaluateAll((elements) => {
     for (const [index, element] of elements.entries()) {

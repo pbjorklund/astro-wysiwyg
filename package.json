@@ -1,6 +1,6 @@
 {
   "name": "astro-wysiwyg",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Edit rendered Astro and Markdown text in place and save it to source files during development.",
   "homepage": "https://github.com/pbjorklund/astro-wysiwyg#readme",
   "repository": {
@@ -61,21 +61,22 @@
     "node": ">=18.17.1"
   },
   "peerDependencies": {
-    "astro": ">=5.0.0 <7.0.0"
+    "astro": ">=5.0.0 <8.0.0"
   },
   "dependencies": {
     "@astrojs/compiler": "^2.13.1",
+    "@astrojs/markdown-remark": "^7.2.2",
     "sanitize-html": "2.17.5",
     "turndown": "^7.2.2"
   },
   "devDependencies": {
-    "@astrojs/mdx": "^6.0.3",
+    "@astrojs/mdx": "^7.0.5",
     "@playwright/test": "^1.60.0",
     "@types/istanbul-lib-coverage": "^2.0.6",
     "@types/node": "^24.10.0",
     "@types/sanitize-html": "^2.16.1",
     "@types/turndown": "^5.0.5",
-    "astro": "^6.4.8",
+    "astro": "^7.2.2",
     "c8": "^12.0.0",
     "happy-dom": "^20.11.0",
     "istanbul-lib-coverage": "^3.2.2",

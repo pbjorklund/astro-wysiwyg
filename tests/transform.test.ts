@@ -4,7 +4,11 @@ import { createMarker, decodeMarker, encodeMarker } from '../src/marker.ts';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { annotateAstroSource, resolveAstroSourceMarker } from '../src/astro-transform.ts';
+import {
+  annotateAstroSource,
+  annotateAstroSourceLocations,
+  resolveAstroSourceMarker,
+} from '../src/astro-transform.ts';
 import { rehypeEditableBlocks, remarkEditableMedia } from '../src/rehype.ts';
 
 function markerFromHtml(html: string): string {
@@ -12,6 +16,28 @@ function markerFromHtml(html: string): string {
   assert.ok(match, `No editor marker in ${html}`);
   return match[1];
 }
+
+test('adds Astro 7 source locations to static and dynamic editable tags', async () => {
+  const source = '<main>\n  <h1>Static</h1>\n  <p>{dynamic}</p>\n  <hr />\n</main>';
+  const transformed = await annotateAstroSourceLocations(
+    source,
+    '/project/src/pages/index.astro',
+    '/project',
+  );
+
+  assert.match(
+    transformed ?? '',
+    /<h1 data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="2:3">/,
+  );
+  assert.match(
+    transformed ?? '',
+    /<p data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="3:3">/,
+  );
+  assert.match(
+    transformed ?? '',
+    /<hr data-astro-source-file="src\/pages\/index\.astro" data-astro-source-loc="4:3" \/>/,
+  );
+});
 
 test('annotates static Astro blocks without changing their source range', async () => {
   const source = '---\nconst title = "Dynamic";\n---\n<main><h1 class="title">Static <em>title</em></h1><p>{title}</p></main>';

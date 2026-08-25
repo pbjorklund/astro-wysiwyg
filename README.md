@@ -106,7 +106,7 @@ Relative iframe paths reject traversal, query strings, and fragments. External U
 
 ## Requirements
 
-- Astro 5 or 6
+- Astro 5, 6, or 7
 - Node.js 18.17.1 or newer
 - A current desktop version of Chromium, Firefox, or Safari
 

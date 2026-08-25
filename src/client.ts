@@ -260,6 +260,7 @@ export function startEditor(options: EditorOptions): void {
 
   function onBeforeSwap(event: Event): void {
     const newDocument = (event as Event & { newDocument: Document }).newDocument;
+    prepareEditableBlocks(newDocument);
     addPersistencePlaceholder(newDocument.body, 'div', HOST_ID);
     addPersistencePlaceholder(newDocument.body, 'span', EDIT_INSTRUCTIONS_ID);
     addPersistencePlaceholder(newDocument.head, 'style', STYLE_PERSIST_KEY);
